@@ -340,16 +340,24 @@ GROK_PRICING = {
 }
 
 
-class GrokLLM(BaseLLM):
-    """xAI Grok backend via the OpenAI-compatible API.
+class _OpenAICompatibleLLM(BaseLLM):
+    """Shared base for OpenAI-compatible chat APIs (xAI Grok, OpenRouter).
 
-    Requires: pip install openai
-    Set the XAI_API_KEY environment variable.
+    Subclasses set API_NAME, BASE_URL, API_KEY_ENV, and optionally PRICING,
+    DEFAULT_HEADERS, and REQUEST_USAGE_ACCOUNTING.
     """
+
+    API_NAME = "openai-compatible"
+    BASE_URL = ""
+    API_KEY_ENV = ""
+    PRICING = {}  # model name -> (input $/1K, output $/1K)
+    DEFAULT_HEADERS = {}
+    # OpenRouter returns per-call cost when usage accounting is requested.
+    REQUEST_USAGE_ACCOUNTING = False
 
     def __init__(
         self,
-        model: str = "grok-3-mini",
+        model: str,
         max_tokens: int = 1024,
         temperature: float = 0.0,
         max_api_retries: int = 5,
@@ -364,15 +372,16 @@ class GrokLLM(BaseLLM):
                 "The 'openai' package is required. Install with: pip install openai"
             )
 
-        api_key = os.environ.get("XAI_API_KEY")
+        api_key = os.environ.get(self.API_KEY_ENV)
         if not api_key:
-            raise ValueError("Set the XAI_API_KEY environment variable")
+            raise ValueError(f"Set the {self.API_KEY_ENV} environment variable")
 
         self._openai = openai
         self.client = openai.OpenAI(
             api_key=api_key,
-            base_url="https://api.x.ai/v1",
+            base_url=self.BASE_URL,
             timeout=timeout,
+            default_headers=self.DEFAULT_HEADERS or None,
         )
         self.model = model
         self.max_tokens = max_tokens
@@ -388,32 +397,44 @@ class GrokLLM(BaseLLM):
             openai.APIConnectionError,
             openai.APITimeoutError,
         )
+        kwargs = dict(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        if self.REQUEST_USAGE_ACCOUNTING:
+            kwargs["extra_body"] = {"usage": {"include": True}}
+
         last_err = None
         for attempt in range(self.max_api_retries):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                )
+                response = self.client.chat.completions.create(**kwargs)
                 self._record_usage(response)
                 return response.choices[0].message.content or ""
             except retryable as e:
                 last_err = e
                 wait = 2 ** attempt
-                print(f"    Rate limited / connection error, retrying in {wait}s...")
+                print(
+                    f"    {self.API_NAME}: rate limited / connection error, "
+                    f"retrying in {wait}s..."
+                )
                 time.sleep(wait)
                 continue
         raise RuntimeError(
-            f"xAI Grok API failed after {self.max_api_retries} retries: {last_err}"
+            f"{self.API_NAME} API failed after {self.max_api_retries} "
+            f"retries: {last_err}"
         )
 
     def _record_usage(self, response):
-        """Capture token usage and estimated cost from an API response."""
+        """Capture token usage and cost from an API response.
+
+        Prefers a provider-reported cost (OpenRouter), otherwise estimates from
+        the PRICING table (Grok). Unknown models report cost 0.
+        """
         usage = getattr(response, "usage", None)
         if usage is None:
             self.last_usage = {}
@@ -423,11 +444,14 @@ class GrokLLM(BaseLLM):
         total_tokens = getattr(
             usage, "total_tokens", prompt_tokens + completion_tokens
         )
-        in_per_1k, out_per_1k = GROK_PRICING.get(self.model, (0.0, 0.0))
-        cost = (
-            (prompt_tokens / 1000.0) * in_per_1k
-            + (completion_tokens / 1000.0) * out_per_1k
-        )
+        cost = getattr(usage, "cost", None)
+        if cost is None:
+            in_per_1k, out_per_1k = self.PRICING.get(self.model, (0.0, 0.0))
+            cost = (
+                (prompt_tokens / 1000.0) * in_per_1k
+                + (completion_tokens / 1000.0) * out_per_1k
+            )
+        cost = float(cost)
         self.last_usage = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -438,3 +462,38 @@ class GrokLLM(BaseLLM):
         self.total_completion_tokens += completion_tokens
         self.total_calls += 1
         self.total_cost_usd += cost
+
+
+class GrokLLM(_OpenAICompatibleLLM):
+    """xAI Grok backend via the OpenAI-compatible API. Set XAI_API_KEY."""
+
+    API_NAME = "xAI Grok"
+    BASE_URL = "https://api.x.ai/v1"
+    API_KEY_ENV = "XAI_API_KEY"
+    PRICING = GROK_PRICING
+
+    def __init__(self, model: str = "grok-3-mini", **kwargs):
+        super().__init__(model=model, **kwargs)
+
+
+class OpenRouterLLM(_OpenAICompatibleLLM):
+    """OpenRouter backend: one endpoint, many models. Set OPENROUTER_API_KEY.
+
+    `model` is an OpenRouter model slug, e.g.:
+        openai/gpt-4o-mini
+        anthropic/claude-3.5-sonnet
+        google/gemini-2.0-flash-001
+        x-ai/grok-2-1212
+        meta-llama/llama-3.3-70b-instruct
+    Per-call cost is reported by OpenRouter via usage accounting, so no local
+    pricing table is needed.
+    """
+
+    API_NAME = "OpenRouter"
+    BASE_URL = "https://openrouter.ai/api/v1"
+    API_KEY_ENV = "OPENROUTER_API_KEY"
+    DEFAULT_HEADERS = {"X-Title": "quantum-icl"}
+    REQUEST_USAGE_ACCOUNTING = True
+
+    def __init__(self, model: str = "openai/gpt-4o-mini", **kwargs):
+        super().__init__(model=model, **kwargs)

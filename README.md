@@ -20,11 +20,17 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The Grok backend reads the API key from the environment — never hardcode it:
+LLM backends read their API key from the environment — never hardcode it:
 
 ```bash
-export XAI_API_KEY=<your xai key>   # get one at https://console.x.ai
+export XAI_API_KEY=<your xai key>            # grok backend; https://console.x.ai
+export OPENROUTER_API_KEY=<sk-or-v1-...>      # openrouter backend; https://openrouter.ai
 ```
+
+**OpenRouter** gives access to many models (GPT, Claude, Gemini, Grok, Llama, …)
+through one OpenAI-compatible endpoint, with per-call cost reported automatically.
+Pass any OpenRouter model slug via `--model`, e.g. `openai/gpt-4o-mini`,
+`anthropic/claude-3.5-sonnet`, `google/gemini-2.0-flash-001`, `x-ai/grok-2-1212`.
 
 ## Running
 
@@ -34,7 +40,16 @@ python start.py --llm mock --mode all --rounds 2 --tasks-per-round 3 --seed 42
 
 # Real run with xAI Grok (default model: grok-3-mini; --model accepts any string)
 python start.py --llm grok --model grok-3-mini --mode all --rounds 5 --tasks-per-round 10 --seed 42
+
+# Real run via OpenRouter (any model slug)
+python start.py --llm openrouter --model openai/gpt-4o-mini --mode all --rounds 5 --tasks-per-round 10 --seed 42
+
+# Phase 2: true unitary synthesis over the Clifford+T gate set
+python start.py --llm openrouter --model openai/gpt-4o-mini --task-type unitary --gate-set clifford_t --mode all
 ```
+
+Runs are reproducible: a fixed `--seed` plus `temperature=0.0` gives identical
+results across processes (per-mode seeds are derived with a stable SHA-256 hash).
 
 Key flags: `--llm {mock,grok,gemini,anthropic}`, `--model`, `--temperature` (grok, default
 0.0), `--mode {independent,static,growing,all}`, `--rounds`, `--tasks-per-round`,

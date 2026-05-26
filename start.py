@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import random
 import sys
 
@@ -20,7 +21,7 @@ from functools import partial
 from graph_task import generate_random_tasks
 from unitary_task import generate_unitary_tasks, create_unitary_starter_library
 from library import create_starter_library
-from llm import MockLLM, MockUnitaryLLM, GeminiLLM, AnthropicLLM, GrokLLM
+from llm import MockLLM, MockUnitaryLLM, GeminiLLM, AnthropicLLM, GrokLLM, OpenRouterLLM
 from evaluation import run_experiment, print_comparison, print_library_growth
 from results_logger import RunLogger
 from plots import make_all_plots
@@ -71,18 +72,19 @@ def main():
     )
     parser.add_argument(
         "--llm",
-        choices=["mock", "gemini", "anthropic", "grok"],
+        choices=["mock", "gemini", "anthropic", "grok", "openrouter"],
         default="mock",
         help="LLM backend (default: mock)",
     )
     parser.add_argument(
         "--model", type=str, default=None,
-        help="Model name override (default: grok-3-mini / gemini-2.0-flash / "
-             "claude-sonnet-4-20250514)",
+        help="Model name override. Defaults per backend: grok-3-mini / "
+             "openai/gpt-4o-mini (openrouter) / gemini-2.0-flash / "
+             "claude-sonnet-4-20250514",
     )
     parser.add_argument(
         "--temperature", type=float, default=0.0,
-        help="Sampling temperature for the grok backend (default: 0.0)",
+        help="Sampling temperature for grok/openrouter backends (default: 0.0)",
     )
     parser.add_argument(
         "--outdir", type=str, default="results",
@@ -150,6 +152,9 @@ def main():
     elif args.llm == "grok":
         model = args.model or "grok-3-mini"
         print(f"Using xAI Grok LLM (model: {model})\n")
+    elif args.llm == "openrouter":
+        model = args.model or "openai/gpt-4o-mini"
+        print(f"Using OpenRouter LLM (model: {model})\n")
 
     # Determine modes to run
     modes = (
@@ -171,8 +176,11 @@ def main():
         print(f"{'='*60}")
 
         # Each mode gets its own LLM instance with a deterministic seed
-        # derived from the main seed, so results are reproducible
-        mode_seed = hash((args.seed, mode)) % (2**31)
+        # derived from the main seed, so results are reproducible across
+        # processes (Python's built-in hash() is randomized per process).
+        mode_seed = int(
+            hashlib.sha256(f"{args.seed}:{mode}".encode()).hexdigest(), 16
+        ) % (2**31)
         if args.llm == "mock":
             if args.task_type == "unitary":
                 llm = MockUnitaryLLM(all_tasks, rng=random.Random(mode_seed))
@@ -183,6 +191,11 @@ def main():
         elif args.llm == "grok":
             llm = GrokLLM(
                 model=args.model or "grok-3-mini",
+                temperature=args.temperature,
+            )
+        elif args.llm == "openrouter":
+            llm = OpenRouterLLM(
+                model=args.model or "openai/gpt-4o-mini",
                 temperature=args.temperature,
             )
         else:

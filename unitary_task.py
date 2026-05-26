@@ -114,8 +114,16 @@ def _random_circuit(
     gate_count: int,
     rng: random.Random,
 ) -> CircuitDefinition:
-    """Sample a random circuit of `gate_count` gates from `gate_set`."""
-    gate_names = sorted(GATE_SETS[gate_set])
+    """Sample a random circuit of `gate_count` gates from `gate_set`.
+
+    Only gates whose arity fits `num_qubits` are used (e.g. no 2-qubit gates
+    on a single-qubit circuit).
+    """
+    gate_names = sorted(g for g in GATE_SETS[gate_set] if _GATE_ARITY[g] <= num_qubits)
+    if not gate_names:
+        raise ValueError(
+            f"No gates in '{gate_set}' fit {num_qubits} qubit(s)"
+        )
     gates = []
     for _ in range(gate_count):
         name = rng.choice(gate_names)
@@ -148,11 +156,6 @@ def generate_unitary_tasks(
     while len(tasks) < num_tasks and attempts < max_attempts:
         attempts += 1
         n = rng.randint(qubit_range[0], qubit_range[1])
-        # A 2-qubit gate needs >= 2 qubits; cap gate sampling accordingly.
-        if n < 2:
-            usable = {g for g in GATE_SETS[gate_set] if _GATE_ARITY[g] == 1}
-            if not usable:
-                continue
         gate_count = rng.randint(gate_count_range[0], gate_count_range[1])
         circuit = _random_circuit(n, gate_set, gate_count, rng)
         unitary = circuit_unitary(circuit)
