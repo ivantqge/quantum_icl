@@ -1,0 +1,38 @@
+# Quantum-ICL configuration.
+# Defaults below are a CHEAP, FREE smoke/pilot (mock backend, tiny task counts).
+# Override on the CLI, e.g.:
+#   python -m quantum_icl.experiment --config quantum_icl/config.yaml
+#   python -m quantum_icl.experiment --config quantum_icl/config.yaml \
+#       --backend openrouter --model openai/gpt-4o-mini --num-tasks 5
+#
+# Cost note: API runs spend real credits. Keep --num-tasks, --attempts, tiers,
+# and conditions small for API/pilot runs; use the mock backend (free) for
+# pipeline development.
+
+seed: 42
+
+llm:
+  backend: mock                 # mock | openrouter | grok | local
+  model: openai/gpt-4o-mini     # openrouter slug, grok model, or HF repo (local)
+  temperature: 0.0
+  max_tokens: 1024
+  mock_success_rate: 0.7        # only used by the mock backend
+
+experiment:
+  tiers: [A, B, C, D]
+  conditions:
+    - zero_shot
+    - fixed_few_shot
+    - random_retrieval
+    - structural_retrieval
+    # scale-up: text_retrieval, growing_structural_library
+  attempts_per_task: 3
+  num_examples: 3
+  fidelity_threshold: 0.999
+  outdir: results_qicl
+
+tiers:
+  A: {num_tasks: 5, qubit_range: [4, 5], edge_prob: 0.5}      # graph states
+  B: {num_tasks: 5, qubit_range: [2, 3], gen_gate_range: [3, 8]}   # stabilizer states
+  C: {num_tasks: 5, qubit_range: [2, 2], gen_gate_range: [3, 10]}  # Clifford unitaries
+  D: {num_tasks: 5, qubit_range: [2, 2], gen_gate_range: [4, 12]}  # Clifford+T

@@ -7,6 +7,7 @@ cirq-core>=1.3
 numpy>=1.24
 openai>=1.30
 matplotlib>=3.7
+pyyaml>=6.0
 
 # Optional LLM backends (not needed for the grok/mock backends):
 # anthropic>=0.40
