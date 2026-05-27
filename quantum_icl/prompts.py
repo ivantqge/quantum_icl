@@ -60,10 +60,11 @@ def format_example(ex: dict) -> str:
     )
 
 
-def build_messages(task, examples) -> tuple:
+def build_messages(task, examples, feedback=None) -> tuple:
     """Return (system_message, user_message). `examples` is a list of entries
     each having 'description' and 'solution_circuit' (library entries or fixed
-    examples); pass [] for zero-shot."""
+    examples); pass [] for zero-shot. `feedback`, if given, describes the
+    previous failed attempt so the model can refine (self-refinement loop)."""
     parts = []
     if examples:
         parts.append("Here are solved examples:\n")
@@ -74,6 +75,34 @@ def build_messages(task, examples) -> tuple:
     parts.append("--- New target ---")
     parts.append(task.description)
     parts.append("")
+
+    if feedback:
+        parts.append("--- Your previous attempt was INCORRECT ---")
+        if feedback.get("prev_circuit_json"):
+            parts.append("Circuit you proposed:")
+            parts.append("```json")
+            parts.append(feedback["prev_circuit_json"])
+            parts.append("```")
+        if not feedback.get("valid", True):
+            parts.append(f"The verifier rejected it: {feedback.get('error', 'invalid')}")
+        else:
+            parts.append(
+                f"It ran but matched the target with fidelity only "
+                f"{feedback.get('fidelity', 0.0):.4f} (need > 0.999, up to "
+                f"global phase). It is close but not equivalent."
+            )
+            if feedback.get("produced_state_str"):
+                parts.append(
+                    f"Your circuit produced this state instead:\n  "
+                    f"{feedback['produced_state_str']}"
+                )
+                parts.append(
+                    "Compare it entry-by-entry with the target state above and "
+                    "change the gates to remove the difference."
+                )
+        parts.append("Diagnose what is wrong and output a corrected circuit.")
+        parts.append("")
+
     parts.append(
         "Give a one-sentence strategy, then output the circuit as JSON in a "
         "```json fenced block matching the schema exactly."

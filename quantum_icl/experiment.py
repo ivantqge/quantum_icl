@@ -17,7 +17,11 @@ from .library import VerifiedLibrary
 from .retrieval import make_retriever
 from .prompts import build_messages, fixed_examples
 from .verify import verify
-from .simulate import circuit_metrics
+from .simulate import circuit_metrics, state_vector
+
+
+def _fmt_state(vec):
+    return "[" + ", ".join(f"{z.real:+.4f}{z.imag:+.4f}j" for z in vec) + "]"
 from .metrics import MetricsLogger
 from . import llm as llm_mod
 
@@ -141,10 +145,11 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
                 gen_m = circuit_metrics(task.generator) if task.generator else {}
                 best_fid, solved, used = 0.0, False, 0
                 sol_m, pt, ct, cost = {}, 0, 0, 0.0
+                feedback = None  # self-refinement: prior failed attempt
 
                 for attempt in range(exp["attempts_per_task"]):
                     used = attempt + 1
-                    system, user = build_messages(task, examples)
+                    system, user = build_messages(task, examples, feedback=feedback)
                     resp = llm.generate(system, user)
                     pt += resp.prompt_tokens
                     ct += resp.completion_tokens
@@ -171,6 +176,22 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
                         if cc["grows"]:
                             library.add(task, res.circuit, m)
                         break
+                    # Feed this failed attempt back into the next prompt,
+                    # including the state it actually produced (state tiers).
+                    produced_str = None
+                    if res.circuit and task.target_kind == "state":
+                        try:
+                            produced_str = _fmt_state(state_vector(res.circuit))
+                        except Exception:
+                            produced_str = None
+                    feedback = {
+                        "prev_circuit_json": (json.dumps(res.circuit)
+                                              if res.circuit else None),
+                        "fidelity": res.fidelity,
+                        "valid": res.valid,
+                        "error": res.error,
+                        "produced_state_str": produced_str,
+                    }
 
                 logger.log_task(
                     condition=condition, tier=tier, task_id=task.task_id,
