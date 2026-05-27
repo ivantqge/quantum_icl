@@ -90,6 +90,130 @@ def generate_task_pools(cfg) -> dict:
     return pools
 
 
+def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
+    """Run one (condition, tier) block sequentially; return its records.
+
+    Each block is self-contained (own library + LLM instance), so blocks can
+    execute concurrently without shared state.
+    """
+    cc = CONDITION_PRESETS[condition]
+    backend = cfg["llm"]["backend"]
+    retr_rng = random.Random(stable_seed(cfg["seed"], condition, tier, "retr"))
+    retriever = make_retriever(cc["retriever"], rng=retr_rng)
+    library = VerifiedLibrary()
+    fixed = fixed_examples(tier, k) if cc["use_fixed"] else None
+
+    if backend == "mock":
+        llm = llm_mod.MockLLM(
+            all_tasks,
+            rng=random.Random(stable_seed(cfg["seed"], condition, tier, "mock")),
+            success_rate=cfg["llm"].get("mock_success_rate", 0.7),
+        )
+    else:
+        llm = llm_mod.make_llm(
+            backend, model=cfg["llm"]["model"],
+            temperature=cfg["llm"]["temperature"],
+            max_tokens=cfg["llm"]["max_tokens"],
+        )
+
+    attempts_rec, tasks_rec, libcurve_rec = [], [], []
+
+    for idx, task in enumerate(tier_tasks):
+        lib_at_start = library.size()
+        libcurve_rec.append({"condition": condition, "tier": tier,
+                             "task_index": idx, "size": lib_at_start})
+
+        if cc["use_fixed"]:
+            examples = fixed
+        elif cc["retriever"] != "none" and library.size() > 0:
+            examples = retriever.select(task, library, k)
+        else:
+            examples = []
+        retrieved_ids = [e.get("task_id", "fixed") for e in examples]
+
+        gen_m = circuit_metrics(task.generator) if task.generator else {}
+        best_fid, solved, used = 0.0, False, 0
+        sol_m, pt, ct, cost = {}, 0, 0, 0.0
+        feedback = None
+
+        for attempt in range(exp["attempts_per_task"]):
+            used = attempt + 1
+            system, user = build_messages(task, examples, feedback=feedback)
+            try:
+                resp = llm.generate(system, user)
+            except Exception as e:
+                attempts_rec.append(dict(
+                    condition=condition, tier=tier, task_id=task.task_id,
+                    task_index=idx, attempt=attempt + 1,
+                    num_retrieved=len(examples), valid=False, success=False,
+                    fidelity=0.0, depth=None, gate_count=None,
+                    two_qubit_gate_count=None, t_count=None, prompt_tokens=0,
+                    completion_tokens=0, cost_usd=0.0, library_size=lib_at_start,
+                    error=f"generate failed: {type(e).__name__}: {e}",
+                    system=system, user=user, response="",
+                    retrieved_ids=retrieved_ids,
+                ))
+                feedback = None
+                continue
+            pt += resp.prompt_tokens
+            ct += resp.completion_tokens
+            cost += resp.cost_usd
+            res = verify(task, resp.text, thr)
+            best_fid = max(best_fid, res.fidelity)
+            m = res.metrics or {}
+            attempts_rec.append(dict(
+                condition=condition, tier=tier, task_id=task.task_id,
+                task_index=idx, attempt=attempt + 1,
+                num_retrieved=len(examples), valid=res.valid,
+                success=res.success, fidelity=res.fidelity,
+                depth=m.get("depth"), gate_count=m.get("gate_count"),
+                two_qubit_gate_count=m.get("two_qubit_gate_count"),
+                t_count=m.get("t_count"), prompt_tokens=resp.prompt_tokens,
+                completion_tokens=resp.completion_tokens, cost_usd=resp.cost_usd,
+                library_size=lib_at_start, error=res.error, system=system,
+                user=user, response=resp.text, retrieved_ids=retrieved_ids,
+            ))
+            if res.success:
+                solved, sol_m = True, m
+                if cc["grows"]:
+                    library.add(task, res.circuit, m)
+                break
+            produced_str = None
+            if res.circuit and task.target_kind == "state":
+                try:
+                    produced_str = _fmt_state(state_vector(res.circuit))
+                except Exception:
+                    produced_str = None
+            feedback = {
+                "prev_circuit_json": (json.dumps(res.circuit)
+                                      if res.circuit else None),
+                "fidelity": res.fidelity, "valid": res.valid,
+                "error": res.error, "produced_state_str": produced_str,
+            }
+
+        tasks_rec.append(dict(
+            condition=condition, tier=tier, task_id=task.task_id,
+            task_index=idx, solved=solved, attempts_used=used,
+            best_fidelity=best_fid, depth=sol_m.get("depth"),
+            gate_count=sol_m.get("gate_count"),
+            two_qubit_gate_count=sol_m.get("two_qubit_gate_count"),
+            t_count=sol_m.get("t_count"), prompt_tokens=pt,
+            completion_tokens=ct, cost_usd=cost,
+            library_size_at_start=lib_at_start,
+            gen_gate_count=gen_m.get("gate_count"),
+            gen_t_count=gen_m.get("t_count"),
+        ))
+
+    return {
+        "condition": condition, "tier": tier,
+        "attempts": attempts_rec, "tasks": tasks_rec, "libcurve": libcurve_rec,
+        "solved": sum(1 for t in tasks_rec if t["solved"]), "n": len(tier_tasks),
+        "final_lib": library.size(), "llm_calls": llm.total_calls,
+        "pt": llm.total_prompt_tokens, "ct": llm.total_completion_tokens,
+        "cost": llm.total_cost_usd,
+    }
+
+
 def run(cfg, run_dir, verbose=True) -> MetricsLogger:
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "config.json"), "w") as f:
@@ -100,124 +224,56 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
     all_tasks = [t for tier in pools for t in pools[tier]]
     logger = MetricsLogger()
 
-    backend = cfg["llm"]["backend"]
-    shared_llm = None
-    if backend != "mock":
-        shared_llm = llm_mod.make_llm(
-            backend, model=cfg["llm"]["model"],
-            temperature=cfg["llm"]["temperature"],
-            max_tokens=cfg["llm"]["max_tokens"],
-        )
-
     k = exp["num_examples"]
     thr = exp["fidelity_threshold"]
+    workers = int(exp.get("workers", 1))
 
-    for condition in exp["conditions"]:
-        cc = CONDITION_PRESETS[condition]
-        for tier in exp["tiers"]:
-            tier_tasks = pools[tier]
-            retr_rng = random.Random(stable_seed(cfg["seed"], condition, tier, "retr"))
-            retriever = make_retriever(cc["retriever"], rng=retr_rng)
-            library = VerifiedLibrary()
-            fixed = fixed_examples(tier, k) if cc["use_fixed"] else None
+    # Each (condition, tier) block is independent (own library + LLM), so run
+    # them concurrently; each block is sequential internally to preserve
+    # growing-library order. Records merge deterministically by (cond, tier).
+    jobs = [(c, t) for c in exp["conditions"] for t in exp["tiers"]]
 
-            if backend == "mock":
-                llm = llm_mod.MockLLM(
-                    all_tasks,
-                    rng=random.Random(stable_seed(cfg["seed"], condition, tier, "mock")),
-                    success_rate=cfg["llm"].get("mock_success_rate", 0.7),
-                )
-            else:
-                llm = shared_llm
+    def work(ct):
+        c, t = ct
+        return _run_block(cfg, c, t, pools[t], all_tasks, exp, k, thr)
 
-            for idx, task in enumerate(tier_tasks):
-                lib_at_start = library.size()
-                logger.log_library_size(condition, tier, idx, lib_at_start)
+    def announce(blk):
+        if verbose:
+            print(f"  [{blk['condition']}|{blk['tier']}] "
+                  f"{blk['solved']}/{blk['n']} solved, "
+                  f"final library={blk['final_lib']}", flush=True)
 
-                if cc["use_fixed"]:
-                    examples = fixed
-                elif cc["retriever"] != "none" and library.size() > 0:
-                    examples = retriever.select(task, library, k)
-                else:
-                    examples = []
-                retrieved_ids = [e.get("task_id", "fixed") for e in examples]
+    results = {}
+    if workers > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(work, ct): ct for ct in jobs}
+            for fut in as_completed(futs):
+                blk = fut.result()
+                results[(blk["condition"], blk["tier"])] = blk
+                announce(blk)
+    else:
+        for ct in jobs:
+            blk = work(ct)
+            results[(blk["condition"], blk["tier"])] = blk
+            announce(blk)
 
-                gen_m = circuit_metrics(task.generator) if task.generator else {}
-                best_fid, solved, used = 0.0, False, 0
-                sol_m, pt, ct, cost = {}, 0, 0, 0.0
-                feedback = None  # self-refinement: prior failed attempt
-
-                for attempt in range(exp["attempts_per_task"]):
-                    used = attempt + 1
-                    system, user = build_messages(task, examples, feedback=feedback)
-                    resp = llm.generate(system, user)
-                    pt += resp.prompt_tokens
-                    ct += resp.completion_tokens
-                    cost += resp.cost_usd
-                    res = verify(task, resp.text, thr)
-                    best_fid = max(best_fid, res.fidelity)
-                    m = res.metrics or {}
-                    logger.log_attempt(
-                        condition=condition, tier=tier, task_id=task.task_id,
-                        task_index=idx, attempt=attempt + 1,
-                        num_retrieved=len(examples), valid=res.valid,
-                        success=res.success, fidelity=res.fidelity,
-                        depth=m.get("depth"), gate_count=m.get("gate_count"),
-                        two_qubit_gate_count=m.get("two_qubit_gate_count"),
-                        t_count=m.get("t_count"),
-                        prompt_tokens=resp.prompt_tokens,
-                        completion_tokens=resp.completion_tokens,
-                        cost_usd=resp.cost_usd, library_size=lib_at_start,
-                        error=res.error, system=system, user=user,
-                        response=resp.text, retrieved_ids=retrieved_ids,
-                    )
-                    if res.success:
-                        solved, sol_m = True, m
-                        if cc["grows"]:
-                            library.add(task, res.circuit, m)
-                        break
-                    # Feed this failed attempt back into the next prompt,
-                    # including the state it actually produced (state tiers).
-                    produced_str = None
-                    if res.circuit and task.target_kind == "state":
-                        try:
-                            produced_str = _fmt_state(state_vector(res.circuit))
-                        except Exception:
-                            produced_str = None
-                    feedback = {
-                        "prev_circuit_json": (json.dumps(res.circuit)
-                                              if res.circuit else None),
-                        "fidelity": res.fidelity,
-                        "valid": res.valid,
-                        "error": res.error,
-                        "produced_state_str": produced_str,
-                    }
-
-                logger.log_task(
-                    condition=condition, tier=tier, task_id=task.task_id,
-                    task_index=idx, solved=solved, attempts_used=used,
-                    best_fidelity=best_fid,
-                    depth=sol_m.get("depth"), gate_count=sol_m.get("gate_count"),
-                    two_qubit_gate_count=sol_m.get("two_qubit_gate_count"),
-                    t_count=sol_m.get("t_count"),
-                    prompt_tokens=pt, completion_tokens=ct, cost_usd=cost,
-                    library_size_at_start=lib_at_start,
-                    gen_gate_count=gen_m.get("gate_count"),
-                    gen_t_count=gen_m.get("t_count"),
-                )
-
-            if verbose:
-                solved = sum(1 for t in logger.tasks
-                             if t["condition"] == condition and t["tier"] == tier
-                             and t["solved"])
-                print(f"  [{condition}|{tier}] {solved}/{len(tier_tasks)} solved, "
-                      f"final library={library.size()}")
+    # Merge records into the logger in deterministic (condition, tier) order.
+    for ct in jobs:
+        blk = results[ct]
+        for r in blk["libcurve"]:
+            logger.log_library_size(r["condition"], r["tier"],
+                                    r["task_index"], r["size"])
+        for r in blk["attempts"]:
+            logger.log_attempt(**r)
+        for r in blk["tasks"]:
+            logger.log_task(**r)
 
     logger.write(run_dir)
-    if shared_llm is not None:
-        print(f"\nLLM totals: calls={shared_llm.total_calls}, "
-              f"tokens={shared_llm.total_prompt_tokens}+{shared_llm.total_completion_tokens}, "
-              f"cost=${shared_llm.total_cost_usd:.4f}")
+    print(f"\nLLM totals: calls={sum(b['llm_calls'] for b in results.values())}, "
+          f"tokens={sum(b['pt'] for b in results.values())}+"
+          f"{sum(b['ct'] for b in results.values())}, "
+          f"cost=${sum(b['cost'] for b in results.values()):.4f}", flush=True)
     return logger
 
 
@@ -232,6 +288,10 @@ def main():
     ap.add_argument("--num-tasks", type=int, default=None,
                     help="override num_tasks for every tier")
     ap.add_argument("--attempts", type=int, default=None)
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="max output tokens per call (raise for reasoning models)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="concurrent (condition,tier) blocks (default 1)")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--tag", default=None)
     ap.add_argument("--outdir", default=None)
@@ -251,6 +311,10 @@ def main():
         cfg["experiment"]["conditions"] = args.conditions.split(",")
     if args.attempts is not None:
         cfg["experiment"]["attempts_per_task"] = args.attempts
+    if args.max_tokens is not None:
+        cfg["llm"]["max_tokens"] = args.max_tokens
+    if args.workers is not None:
+        cfg["experiment"]["workers"] = args.workers
     if args.outdir:
         cfg["experiment"]["outdir"] = args.outdir
     if args.num_tasks is not None:
