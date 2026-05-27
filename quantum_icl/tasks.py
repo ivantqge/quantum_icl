@@ -11,12 +11,15 @@ features (and used by the mock backend).
 """
 
 from dataclasses import dataclass, field
+import os
 import random
 
 import numpy as np
 
 from .schema import GATE_ARITY
-from .simulate import state_vector, circuit_unitary, circuit_metrics
+from .simulate import (
+    state_vector, circuit_unitary, circuit_metrics, stabilizer_generators,
+)
 
 TIER_GATE_SETS = {
     "A": ["H", "CZ"],
@@ -101,6 +104,21 @@ def _describe_unitary(u):
            "\n".join(rows)
 
 
+def _describe_stabilizer(state, n):
+    gens = stabilizer_generators(state, n)
+    lines = [
+        "Target stabilizer state, specified by its stabilizer generators",
+        "(Pauli operators that fix the state with the given sign; the leftmost "
+        "Pauli letter acts on qubit 0):",
+    ]
+    lines += [f"  g{i} = {g}" for i, g in enumerate(gens, 1)]
+    lines.append(
+        "Prepare the common +1 eigenstate of all g_i, starting from |0...0>."
+    )
+    lines.append(_describe_state(state))
+    return "\n".join(lines)
+
+
 def _connected_components(n, edges):
     parent = list(range(n))
 
@@ -182,10 +200,16 @@ def _gen_hidden(tier, n_tasks, qubit_range, gen_gate_range, rng):
             "gen_depth": m["depth"],
             "gen_t_count": m["t_count"],
         }
-        desc = (_describe_state(target) if kind == "state"
-                else _describe_unitary(target))
-        desc = (f"{tier}-tier synthesis on {n} qubits using gates "
-                f"{gate_set}.\n{desc}")
+        # Tier B optionally augments amplitudes with stabilizer generators.
+        # Empirically, raw amplitudes work better for weaker models, so that is
+        # the default; set QICL_STABILIZER_DESC=1 to include generators.
+        if tier == "B" and os.environ.get("QICL_STABILIZER_DESC") == "1":
+            body = _describe_stabilizer(target, n)
+        elif kind == "state":
+            body = _describe_state(target)
+        else:
+            body = _describe_unitary(target)
+        desc = f"{tier}-tier synthesis on {n} qubits using gates {gate_set}.\n{body}"
         tasks.append(Task(
             task_id=f"{tier}_{n}q_{_target_hash(target)}", tier=tier,
             num_qubits=n, target_kind=kind, target=target,

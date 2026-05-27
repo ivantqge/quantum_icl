@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
     },
     "tiers": {
         "A": {"num_tasks": 5, "qubit_range": [4, 5], "edge_prob": 0.5},
-        "B": {"num_tasks": 5, "qubit_range": [2, 3], "gen_gate_range": [3, 8]},
+        "B": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [2, 6]},
         "C": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [3, 10]},
         "D": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [4, 12]},
     },

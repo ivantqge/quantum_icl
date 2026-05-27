@@ -1,9 +1,18 @@
 """Circuit simulation, fidelity measures, and circuit-quality metrics."""
 
+import itertools
+
 import numpy as np
 import cirq
 
 from .schema import GATE_ARITY
+
+_PAULI = {
+    "I": np.eye(2, dtype=complex),
+    "X": np.array([[0, 1], [1, 0]], dtype=complex),
+    "Y": np.array([[0, -1j], [1j, 0]], dtype=complex),
+    "Z": np.array([[1, 0], [0, -1]], dtype=complex),
+}
 
 # gate name -> callable(qubits) -> cirq operation
 _GATE_OPS = {
@@ -63,6 +72,56 @@ def process_fidelity(u: np.ndarray, v: np.ndarray, num_qubits: int) -> float:
         return 0.0
     d = 2 ** num_qubits
     return float(abs(np.trace(u.conj().T @ v)) / d)
+
+
+def _pauli_matrix(label: str) -> np.ndarray:
+    m = np.array([[1.0 + 0j]])
+    for ch in label:
+        m = np.kron(m, _PAULI[ch])
+    return m
+
+
+def stabilizer_generators(state, num_qubits: int) -> list:
+    """Return n signed Pauli-string generators of a stabilizer state.
+
+    Each generator is a string like "+XZ" or "-ZI": a Pauli operator that fixes
+    the state (eigenvalue +/-1). Found by collecting non-identity Paulis with
+    |<psi|P|psi>| ~ 1 and taking an independent set over GF(2). For small n
+    (the stabilizer tier) the 4^n enumeration is cheap.
+    """
+    psi = np.asarray(state).reshape(-1)
+    basis = {}   # leading bit -> reduced symplectic vector
+    gens = []
+
+    def symplectic(label):
+        x = z = 0
+        for i, ch in enumerate(label):
+            if ch in ("X", "Y"):
+                x |= 1 << i
+            if ch in ("Z", "Y"):
+                z |= 1 << i
+        return x | (z << num_qubits)
+
+    def try_add(v):
+        while v:
+            h = v.bit_length() - 1
+            if h in basis:
+                v ^= basis[h]
+            else:
+                basis[h] = v
+                return True
+        return False
+
+    for combo in itertools.product("IXYZ", repeat=num_qubits):
+        label = "".join(combo)
+        if label == "I" * num_qubits:
+            continue
+        exp = np.vdot(psi, _pauli_matrix(label) @ psi).real
+        if abs(abs(exp) - 1.0) < 1e-6 and try_add(symplectic(label)):
+            gens.append(("+" if exp > 0 else "-") + label)
+            if len(gens) == num_qubits:
+                break
+    return gens
 
 
 def circuit_metrics(circ: dict) -> dict:

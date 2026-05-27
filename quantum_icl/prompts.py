@@ -17,6 +17,24 @@ _GATE_HELP = {
 }
 
 
+_TIER_HINTS = {
+    "B": (
+        "\n\nThis is a stabilizer-state preparation task. Build superpositions "
+        "with H, fix relative phases with S, and create the correct "
+        "entanglement/correlations with CX/CZ."
+    ),
+    "C": (
+        "\n\nThis is a Clifford unitary-synthesis task: build the exact unitary "
+        "from H, S, CX. Reason column by column about how basis states map."
+    ),
+    "D": (
+        "\n\nThis is a Clifford+T task: the target generally needs T gates. "
+        "Decompose into Clifford layers plus T rotations; reason about how each "
+        "computational basis state should transform."
+    ),
+}
+
+
 def system_prompt(task) -> str:
     allowed = ", ".join(f"{g} ({_GATE_HELP[g]})" for g in task.gate_set)
     return (
@@ -31,6 +49,7 @@ def system_prompt(task) -> str:
         "Gates are applied left to right. Your circuit is correct if it "
         "reproduces the target up to a global phase. Use only the allowed "
         "gates and qubit indices in [0, N)."
+        + _TIER_HINTS.get(task.tier, "")
     )
 
 

@@ -33,6 +33,6 @@ experiment:
 
 tiers:
   A: {num_tasks: 5, qubit_range: [4, 5], edge_prob: 0.5}      # graph states
-  B: {num_tasks: 5, qubit_range: [2, 3], gen_gate_range: [3, 8]}   # stabilizer states
+  B: {num_tasks: 5, qubit_range: [2, 2], gen_gate_range: [2, 6]}   # stabilizer states
   C: {num_tasks: 5, qubit_range: [2, 2], gen_gate_range: [3, 10]}  # Clifford unitaries
   D: {num_tasks: 5, qubit_range: [2, 2], gen_gate_range: [4, 12]}  # Clifford+T
