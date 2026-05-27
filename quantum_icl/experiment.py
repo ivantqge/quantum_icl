@@ -237,26 +237,31 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
         c, t = ct
         return _run_block(cfg, c, t, pools[t], all_tasks, exp, k, thr)
 
-    def announce(blk):
+    blocks_dir = os.path.join(run_dir, "blocks")
+    os.makedirs(blocks_dir, exist_ok=True)
+    results = {}
+
+    def record(blk):
+        results[(blk["condition"], blk["tier"])] = blk
+        # Persist each block as it finishes so a timeout/kill can never lose
+        # completed work; rebuild_from_blocks() can recover a partial run.
+        with open(os.path.join(blocks_dir,
+                  f"{blk['condition']}__{blk['tier']}.json"), "w") as f:
+            json.dump(blk, f)
         if verbose:
             print(f"  [{blk['condition']}|{blk['tier']}] "
                   f"{blk['solved']}/{blk['n']} solved, "
                   f"final library={blk['final_lib']}", flush=True)
 
-    results = {}
     if workers > 1:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(work, ct): ct for ct in jobs}
             for fut in as_completed(futs):
-                blk = fut.result()
-                results[(blk["condition"], blk["tier"])] = blk
-                announce(blk)
+                record(fut.result())
     else:
         for ct in jobs:
-            blk = work(ct)
-            results[(blk["condition"], blk["tier"])] = blk
-            announce(blk)
+            record(work(ct))
 
     # Merge records into the logger in deterministic (condition, tier) order.
     for ct in jobs:
@@ -277,8 +282,31 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
     return logger
 
 
+def rebuild_from_blocks(run_dir):
+    """Rebuild merged outputs (csv/jsonl/summary) from per-block JSON files.
+
+    Use to recover a run that was killed/timed out after some blocks finished.
+    """
+    import glob
+    logger = MetricsLogger()
+    for fp in sorted(glob.glob(os.path.join(run_dir, "blocks", "*.json"))):
+        with open(fp) as f:
+            blk = json.load(f)
+        for r in blk["libcurve"]:
+            logger.log_library_size(r["condition"], r["tier"],
+                                    r["task_index"], r["size"])
+        for r in blk["attempts"]:
+            logger.log_attempt(**r)
+        for r in blk["tasks"]:
+            logger.log_task(**r)
+    logger.write(run_dir)
+    return run_dir
+
+
 def main():
     ap = argparse.ArgumentParser(description="Quantum-ICL experiment runner")
+    ap.add_argument("--rebuild", default=None,
+                    help="rebuild merged outputs from <run_dir>/blocks and exit")
     ap.add_argument("--config", default=None, help="path to config.yaml")
     ap.add_argument("--backend", default=None,
                     choices=["mock", "openrouter", "grok", "local"])
@@ -297,6 +325,11 @@ def main():
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args()
+
+    if args.rebuild:
+        out = rebuild_from_blocks(args.rebuild)
+        print(f"Rebuilt merged outputs in {out}")
+        return
 
     cfg = load_config(args.config)
     if args.backend:
