@@ -105,11 +105,14 @@ def generate_task_pools(cfg) -> dict:
     return pools
 
 
-def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
+def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr,
+               shared_llm=None):
     """Run one (condition, tier) block sequentially; return its records.
 
     Each block is self-contained (own library + LLM instance), so blocks can
-    execute concurrently without shared state.
+    execute concurrently without shared state. When `shared_llm` is given
+    (e.g. for the local HF backend so the model loads only once) the block
+    reuses it and reports per-block cost as the post-pre counter delta.
     """
     cc = CONDITION_PRESETS[condition]
     backend = cfg["llm"]["backend"]
@@ -124,6 +127,14 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
             rng=random.Random(stable_seed(cfg["seed"], condition, tier, "mock")),
             success_rate=cfg["llm"].get("mock_success_rate", 0.7),
         )
+        pre_calls = pre_pt = pre_ct = 0
+        pre_cost = 0.0
+    elif shared_llm is not None:
+        llm = shared_llm
+        pre_calls = llm.total_calls
+        pre_pt = llm.total_prompt_tokens
+        pre_ct = llm.total_completion_tokens
+        pre_cost = llm.total_cost_usd
     else:
         llm = llm_mod.make_llm(
             backend, model=cfg["llm"]["model"],
@@ -131,6 +142,8 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
             max_tokens=cfg["llm"]["max_tokens"],
             adapter_path=cfg["llm"].get("adapter_path"),
         )
+        pre_calls = pre_pt = pre_ct = 0
+        pre_cost = 0.0
 
     attempts_rec, tasks_rec, libcurve_rec = [], [], []
 
@@ -237,9 +250,11 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
         "condition": condition, "tier": tier,
         "attempts": attempts_rec, "tasks": tasks_rec, "libcurve": libcurve_rec,
         "solved": sum(1 for t in tasks_rec if t["solved"]), "n": len(tier_tasks),
-        "final_lib": library.size(), "llm_calls": llm.total_calls,
-        "pt": llm.total_prompt_tokens, "ct": llm.total_completion_tokens,
-        "cost": llm.total_cost_usd,
+        "final_lib": library.size(),
+        "llm_calls": llm.total_calls - pre_calls,
+        "pt": llm.total_prompt_tokens - pre_pt,
+        "ct": llm.total_completion_tokens - pre_ct,
+        "cost": llm.total_cost_usd - pre_cost,
     }
 
 
@@ -262,9 +277,21 @@ def run(cfg, run_dir, verbose=True) -> MetricsLogger:
     # growing-library order. Records merge deterministically by (cond, tier).
     jobs = [(c, t) for c in exp["conditions"] for t in exp["tiers"]]
 
+    # Load the local HF model once and share it across blocks; API backends
+    # are cheap to construct so we keep per-block instances for those.
+    shared_llm = None
+    if cfg["llm"]["backend"] == "local":
+        shared_llm = llm_mod.make_llm(
+            "local", model=cfg["llm"]["model"],
+            temperature=cfg["llm"]["temperature"],
+            max_tokens=cfg["llm"]["max_tokens"],
+            adapter_path=cfg["llm"].get("adapter_path"),
+        )
+
     def work(ct):
         c, t = ct
-        return _run_block(cfg, c, t, pools[t], all_tasks, exp, k, thr)
+        return _run_block(cfg, c, t, pools[t], all_tasks, exp, k, thr,
+                          shared_llm=shared_llm)
 
     blocks_dir = os.path.join(run_dir, "blocks")
     os.makedirs(blocks_dir, exist_ok=True)

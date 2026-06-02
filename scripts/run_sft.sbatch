@@ -4,7 +4,7 @@
 #SBATCH -q shared
 #SBATCH -t 02:00:00
 #SBATCH -n 1
-#SBATCH -c 16
+#SBATCH -c 32
 #SBATCH -G 1
 #SBATCH -J qicl_sft
 #SBATCH -o /global/homes/i/ivang/unitary-synthesis/results_qicl/sft.%j.log
