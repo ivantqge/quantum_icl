@@ -20,13 +20,15 @@ def main():
     ap.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct")
     ap.add_argument("--data", required=True, help="directory containing train/val jsonl")
     ap.add_argument("--out", required=True, help="output directory for adapter + logs")
-    ap.add_argument("--epochs", type=float, default=2.0)
+    ap.add_argument("--epochs", type=float, default=3.0)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--max-seq-len", type=int, default=2048)
-    ap.add_argument("--lora-r", type=int, default=16)
-    ap.add_argument("--lora-alpha", type=int, default=32)
+    ap.add_argument("--lora-r", type=int, default=32)
+    ap.add_argument("--lora-alpha", type=int, default=64)
+    ap.add_argument("--assistant-only-loss", action="store_true", default=True,
+                    help="train only on assistant tokens (mask prompt loss)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -64,12 +66,16 @@ def main():
     )
     print(f"[data] train={len(train_ds)}  val={len(val_ds)}")
 
-    def fmt(example):
-        return tokenizer.apply_chat_template(
-            example["messages"], tokenize=False, add_generation_prompt=False,
-        )
+    # With assistant_only_loss=True the trainer applies the chat template
+    # itself and masks non-assistant tokens; we just need the `messages` field.
+    fmt = None
+    if not args.assistant_only_loss:
+        def fmt(example):
+            return tokenizer.apply_chat_template(
+                example["messages"], tokenize=False, add_generation_prompt=False,
+            )
 
-    cfg = SFTConfig(
+    cfg_kwargs = dict(
         output_dir=args.out,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -86,12 +92,19 @@ def main():
         lr_scheduler_type="cosine",
         gradient_checkpointing=True,
     )
+    # Only train loss on the assistant turn -- otherwise the shared system+user
+    # boilerplate dominates the loss and the model memorizes a fixed output.
+    if args.assistant_only_loss:
+        cfg_kwargs["assistant_only_loss"] = True
+    cfg = SFTConfig(**cfg_kwargs)
 
-    trainer = SFTTrainer(
+    trainer_kwargs = dict(
         model=model, args=cfg, processing_class=tokenizer,
         train_dataset=train_ds, eval_dataset=val_ds,
-        formatting_func=fmt,
     )
+    if fmt is not None:
+        trainer_kwargs["formatting_func"] = fmt
+    trainer = SFTTrainer(**trainer_kwargs)
     trainer.train()
     adapter_dir = os.path.join(args.out, "adapter")
     model.save_pretrained(adapter_dir)
