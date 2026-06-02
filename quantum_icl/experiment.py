@@ -26,12 +26,18 @@ from .metrics import MetricsLogger
 from . import llm as llm_mod
 
 CONDITION_PRESETS = {
-    "zero_shot": {"retriever": "none", "use_fixed": False, "grows": False},
-    "fixed_few_shot": {"retriever": "none", "use_fixed": True, "grows": False},
-    "random_retrieval": {"retriever": "random", "use_fixed": False, "grows": True},
-    "text_retrieval": {"retriever": "text", "use_fixed": False, "grows": True},
-    "structural_retrieval": {"retriever": "structural", "use_fixed": False, "grows": True},
-    "growing_structural_library": {"retriever": "structural", "use_fixed": False, "grows": True},
+    # Main 2x2 ablation: {feedback off/on} x {retrieval off/on}.
+    "zero_shot":                          {"retriever": "none",       "use_fixed": False, "grows": False, "use_feedback": False},
+    "feedback_only":                      {"retriever": "none",       "use_fixed": False, "grows": False, "use_feedback": True},
+    "structural_retrieval_only":          {"retriever": "structural", "use_fixed": False, "grows": True,  "use_feedback": False},
+    "structural_retrieval_plus_feedback": {"retriever": "structural", "use_fixed": False, "grows": True,  "use_feedback": True},
+    # Legacy / ancillary conditions retained for compatibility:
+    "fixed_few_shot":                     {"retriever": "none",       "use_fixed": True,  "grows": False, "use_feedback": True},
+    "random_retrieval":                   {"retriever": "random",     "use_fixed": False, "grows": True,  "use_feedback": True},
+    "text_retrieval":                     {"retriever": "text",       "use_fixed": False, "grows": True,  "use_feedback": True},
+    "structural_retrieval":               {"retriever": "structural", "use_fixed": False, "grows": True,  "use_feedback": True},
+    "growing_structural_library":         {"retriever": "structural", "use_fixed": False, "grows": True,  "use_feedback": True},
+    "oracle_retrieval":                   {"retriever": "oracle",     "use_fixed": False, "grows": True,  "use_feedback": True},
 }
 
 DEFAULT_CONFIG = {
@@ -39,19 +45,28 @@ DEFAULT_CONFIG = {
     "llm": {"backend": "mock", "model": "openai/gpt-4o-mini",
             "temperature": 0.0, "max_tokens": 1024},
     "experiment": {
-        "tiers": ["A", "B", "C", "D"],
-        "conditions": ["zero_shot", "fixed_few_shot",
-                       "random_retrieval", "structural_retrieval"],
+        "tiers": ["B", "C_lite", "D_lite"],
+        "conditions": [
+            "zero_shot", "feedback_only",
+            "structural_retrieval_only",
+            "structural_retrieval_plus_feedback",
+        ],
         "attempts_per_task": 3,
         "num_examples": 3,
         "fidelity_threshold": 0.999,
         "outdir": "results_qicl",
+        # Early stopping: after `early_stop_after` tasks, if a block has solved
+        # 0 or all of them, skip the rest of that block.
+        "early_stopping": True,
+        "early_stop_after": 10,
     },
     "tiers": {
-        "A": {"num_tasks": 5, "qubit_range": [4, 5], "edge_prob": 0.5},
-        "B": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [2, 6]},
-        "C": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [3, 10]},
-        "D": {"num_tasks": 5, "qubit_range": [2, 2], "gen_gate_range": [4, 12]},
+        "A": {"num_tasks": 30, "qubit_range": [4, 5], "edge_prob": 0.5},
+        "B": {"num_tasks": 30, "qubit_range": [2, 2], "gen_gate_range": [2, 6]},
+        "C": {"num_tasks": 30, "qubit_range": [2, 2], "gen_gate_range": [3, 10]},
+        "D": {"num_tasks": 30, "qubit_range": [2, 2], "gen_gate_range": [4, 12]},
+        "C_lite": {"num_tasks": 30, "qubit_range": [1, 1], "gen_gate_range": [1, 3]},
+        "D_lite": {"num_tasks": 30, "qubit_range": [1, 1], "gen_gate_range": [1, 4]},
     },
 }
 
@@ -178,6 +193,10 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
                 if cc["grows"]:
                     library.add(task, res.circuit, m)
                 break
+            # Self-refinement feedback is gated by the condition (2x2 ablation).
+            if not cc.get("use_feedback", True):
+                feedback = None
+                continue
             produced_str = None
             if res.circuit and task.target_kind == "state":
                 try:
@@ -203,6 +222,15 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
             gen_gate_count=gen_m.get("gate_count"),
             gen_t_count=gen_m.get("t_count"),
         ))
+
+        # Early-stop a saturated/failed block to save budget.
+        if exp.get("early_stopping", True):
+            n_done = idx + 1
+            after = exp.get("early_stop_after", 10)
+            if n_done >= after:
+                n_solved = sum(1 for t in tasks_rec if t["solved"])
+                if n_solved == 0 or n_solved == n_done:
+                    break
 
     return {
         "condition": condition, "tier": tier,

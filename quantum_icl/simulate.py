@@ -124,6 +124,46 @@ def stabilizer_generators(state, num_qubits: int) -> list:
     return gens
 
 
+def state_features(state, num_qubits: int) -> dict:
+    """Structural features computable from a pure state vector alone (no hidden info)."""
+    psi = np.asarray(state).reshape(-1).astype(complex)
+    probs = (psi.conj() * psi).real
+    amps = np.abs(psi)
+    nonzero = int(np.sum(amps > 1e-9))
+    sparsity = 1.0 - nonzero / len(psi)
+    top = float(np.max(amps))
+    p = probs + 1e-12
+    entropy = float(-np.sum(p * np.log(p)))
+    return {
+        "num_qubits": num_qubits,
+        "state_sparsity": float(sparsity),
+        "state_nonzero": nonzero,
+        "state_top_amp": top,
+        "state_entropy": entropy,
+    }
+
+
+def unitary_features(U, num_qubits: int) -> dict:
+    """Structural features computable from a unitary matrix alone."""
+    U = np.asarray(U)
+    d = 2 ** num_qubits
+    A = np.abs(U)
+    nonzero = int(np.sum(A > 1e-9))
+    sparsity = 1.0 - nonzero / (d * d)
+    diag_mass = float(np.sum(np.abs(np.diag(U)) ** 2) / d)
+    frob_id = float(np.linalg.norm(U - np.eye(d)))
+    # Sorted phase tuple of eigenvalues (rotation invariant within tier).
+    eigs = np.linalg.eigvals(U)
+    phases = sorted(float(np.angle(e)) for e in eigs)
+    return {
+        "num_qubits": num_qubits,
+        "unitary_sparsity": float(sparsity),
+        "unitary_diag_mass": diag_mass,
+        "unitary_frob_to_identity": frob_id,
+        "unitary_phases": phases,
+    }
+
+
 def circuit_metrics(circ: dict) -> dict:
     """Depth (cirq moments), gate count, two-qubit count, T-count."""
     gates = circ["gates"]

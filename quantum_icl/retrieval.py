@@ -10,9 +10,15 @@ import random
 import re
 from collections import Counter
 
-# Numeric structural features compared by StructuralRetrieval.
+# Target-computable scalar features used by default StructuralRetrieval.
 _STRUCT_KEYS = [
     "num_qubits", "num_edges", "num_components",
+    "state_sparsity", "state_nonzero", "state_top_amp", "state_entropy",
+    "unitary_sparsity", "unitary_diag_mass", "unitary_frob_to_identity",
+]
+
+# Hidden-generator scalar features; used ONLY by OracleRetrieval (diagnostics).
+_ORACLE_KEYS = [
     "gen_gate_count", "gen_two_qubit_gate_count", "gen_depth", "gen_t_count",
 ]
 
@@ -95,21 +101,22 @@ class StructuralRetrieval(Retriever):
     name = "structural"
 
     @staticmethod
-    def _distance(qf, cf):
+    def _distance(qf, cf, keys=_STRUCT_KEYS):
         dist = 0.0
         # Strong weight on matching qubit count.
         if qf.get("num_qubits") != cf.get("num_qubits"):
             dist += 5.0
-        for key in _STRUCT_KEYS:
+        for key in keys:
             if key in qf and key in cf:
                 dist += abs(qf[key] - cf[key])
-        # Graph degree-sequence L1 distance, when available.
-        dq, dc = qf.get("degree_sequence"), cf.get("degree_sequence")
-        if dq is not None and dc is not None:
-            m = max(len(dq), len(dc))
-            dq = list(dq) + [0] * (m - len(dq))
-            dc = list(dc) + [0] * (m - len(dc))
-            dist += sum(abs(a - b) for a, b in zip(dq, dc))
+        # List-valued features (L1 on sorted sequence).
+        for key in ("degree_sequence", "unitary_phases"):
+            dq, dc = qf.get(key), cf.get(key)
+            if dq is not None and dc is not None:
+                m = max(len(dq), len(dc))
+                dq = list(dq) + [0] * (m - len(dq))
+                dc = list(dc) + [0] * (m - len(dc))
+                dist += sum(abs(a - b) for a, b in zip(dq, dc))
         return dist
 
     def select(self, query_task, library, k):
@@ -123,11 +130,36 @@ class StructuralRetrieval(Retriever):
         return [e for e, _ in scored[:k]]
 
 
+class OracleRetrieval(Retriever):
+    """DIAGNOSTIC ONLY: retrieve by hidden-generator features.
+
+    Cheats by comparing generator gate count / T-count etc. -- features the
+    LLM cannot derive from the target. Use solely as an upper bound on what
+    structural retrieval could achieve given perfect target understanding.
+    """
+
+    name = "oracle"
+
+    def select(self, query_task, library, k):
+        pool = _same_tier(query_task, library)
+        if len(pool) <= k:
+            return list(pool)
+        qf = getattr(query_task, "oracle_features", {}) or {}
+        scored = sorted(
+            ((e, StructuralRetrieval._distance(
+                qf, e.get("oracle_features", {}), keys=_ORACLE_KEYS))
+             for e in pool),
+            key=lambda x: x[1],
+        )
+        return [e for e, _ in scored[:k]]
+
+
 RETRIEVERS = {
     "none": lambda rng=None: NoRetrieval(),
     "random": lambda rng=None: RandomRetrieval(rng),
     "text": lambda rng=None: TextRetrieval(),
     "structural": lambda rng=None: StructuralRetrieval(),
+    "oracle": lambda rng=None: OracleRetrieval(),
 }
 
 

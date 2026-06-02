@@ -24,6 +24,7 @@ def make_entry(task, solution_circuit: dict, metrics: dict) -> dict:
         "target_kind": task.target_kind,
         "target": _serialize_target(task.target),
         "features": task.features,
+        "oracle_features": getattr(task, "oracle_features", {}) or {},
         "description": task.description,
         "gate_set": list(task.gate_set),
         "solution_circuit": solution_circuit,

@@ -19,6 +19,7 @@ import numpy as np
 from .schema import GATE_ARITY
 from .simulate import (
     state_vector, circuit_unitary, circuit_metrics, stabilizer_generators,
+    state_features, unitary_features,
 )
 
 TIER_GATE_SETS = {
@@ -26,8 +27,16 @@ TIER_GATE_SETS = {
     "B": ["H", "S", "CX", "CZ"],
     "C": ["H", "S", "CX"],
     "D": ["H", "S", "T", "CX", "CZ"],
+    # "lite" tiers: small/shallow targets to keep difficulty in the 20-70%
+    # baseline-success regime where ICL/feedback effects are visible.
+    "C_lite": ["H", "S"],            # 1-qubit Clifford
+    "D_lite": ["H", "S", "T"],       # 1-qubit Clifford+T (low T-count)
 }
-TIER_TARGET_KIND = {"A": "state", "B": "state", "C": "unitary", "D": "unitary"}
+TIER_TARGET_KIND = {
+    "A": "state", "B": "state",
+    "C": "unitary", "D": "unitary",
+    "C_lite": "unitary", "D_lite": "unitary",
+}
 
 
 @dataclass
@@ -38,9 +47,12 @@ class Task:
     target_kind: str            # "state" | "unitary"
     target: np.ndarray          # state vector or unitary matrix
     gate_set: list              # allowed gate names
-    features: dict
+    features: dict              # TARGET-COMPUTABLE features (used by retrieval)
     description: str
-    generator: dict = None      # hidden generator circuit dict (B/C/D, and A canonical)
+    generator: dict = None      # hidden generator circuit dict (kept for analysis)
+    # Oracle features derived from the hidden generator (gate count, T-count,
+    # depth, ...). NEVER used by default retrieval; opt-in for diagnostics only.
+    oracle_features: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         t = np.asarray(self.target)
@@ -54,6 +66,7 @@ class Task:
             "features": self.features,
             "description": self.description,
             "generator": self.generator,
+            "oracle_features": self.oracle_features,
         }
 
     @classmethod
@@ -65,6 +78,7 @@ class Task:
             target_kind=d["target_kind"], target=target,
             gate_set=d["gate_set"], features=d["features"],
             description=d["description"], generator=d.get("generator"),
+            oracle_features=d.get("oracle_features", {}),
         )
 
 
@@ -163,6 +177,13 @@ def gen_graph_state_tasks(n_tasks, qubit_range=(4, 6), edge_prob=0.5, rng=None):
             "num_edges": len(edges),
             "num_components": _connected_components(n, edges),
             "degree_sequence": sorted(degrees),
+            "gate_set": "|".join(TIER_GATE_SETS["A"]),
+        }
+        oracle_features = {
+            "gen_gate_count": len(gates),
+            "gen_two_qubit_gate_count": len(edges),
+            "gen_t_count": 0,
+            "gen_depth": circuit_metrics(gen)["depth"],
         }
         desc = (f"Graph state on {n} qubits.\nEdges: {edges}\n"
                 "Prepare |G> = (prod_{(i,j) in E} CZ_ij) H^{⊗n} |0...0>.")
@@ -170,6 +191,7 @@ def gen_graph_state_tasks(n_tasks, qubit_range=(4, 6), edge_prob=0.5, rng=None):
             task_id=f"A_{n}q_{_target_hash(target)}", tier="A", num_qubits=n,
             target_kind="state", target=target, gate_set=TIER_GATE_SETS["A"],
             features=features, description=desc, generator=gen,
+            oracle_features=oracle_features,
         ))
     return tasks
 
@@ -193,8 +215,14 @@ def _gen_hidden(tier, n_tasks, qubit_range, gen_gate_range, rng):
         seen.add(key)
 
         m = circuit_metrics(gen)
-        features = {
-            "num_qubits": n,
+        # Target-computable features go into Task.features (used by retrieval);
+        # hidden-generator stats go into oracle_features (diagnostics only).
+        if kind == "state":
+            features = state_features(target, n)
+        else:
+            features = unitary_features(target, n)
+        features["gate_set"] = "|".join(gate_set)
+        oracle_features = {
             "gen_gate_count": m["gate_count"],
             "gen_two_qubit_gate_count": m["two_qubit_gate_count"],
             "gen_depth": m["depth"],
@@ -214,7 +242,7 @@ def _gen_hidden(tier, n_tasks, qubit_range, gen_gate_range, rng):
             task_id=f"{tier}_{n}q_{_target_hash(target)}", tier=tier,
             num_qubits=n, target_kind=kind, target=target,
             gate_set=gate_set, features=features, description=desc,
-            generator=gen,
+            generator=gen, oracle_features=oracle_features,
         ))
     if len(tasks) < n_tasks:
         raise RuntimeError(f"tier {tier}: only generated {len(tasks)}/{n_tasks}")
@@ -233,11 +261,23 @@ def gen_cliffordT_tasks(n_tasks, qubit_range=(2, 2), gen_gate_range=(4, 12), rng
     return _gen_hidden("D", n_tasks, qubit_range, gen_gate_range, rng)
 
 
+def gen_clifford_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 3), rng=None):
+    """1-qubit Clifford unitaries: small enough that examples are highly transferable."""
+    return _gen_hidden("C_lite", n_tasks, qubit_range, gen_gate_range, rng)
+
+
+def gen_cliffordT_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 4), rng=None):
+    """1-qubit Clifford+T unitaries with low T-count (random {H,S,T} sequences)."""
+    return _gen_hidden("D_lite", n_tasks, qubit_range, gen_gate_range, rng)
+
+
 GENERATORS = {
     "A": gen_graph_state_tasks,
     "B": gen_stabilizer_tasks,
     "C": gen_clifford_tasks,
     "D": gen_cliffordT_tasks,
+    "C_lite": gen_clifford_lite_tasks,
+    "D_lite": gen_cliffordT_lite_tasks,
 }
 
 
