@@ -29,8 +29,8 @@ TIER_GATE_SETS = {
     "D": ["H", "S", "T", "CX", "CZ"],
     # "lite" tiers: small/shallow targets to keep difficulty in the 20-70%
     # baseline-success regime where ICL/feedback effects are visible.
-    "C_lite": ["H", "S"],            # 1-qubit Clifford
-    "D_lite": ["H", "S", "T"],       # 1-qubit Clifford+T (low T-count)
+    "C_lite": ["H", "S", "X", "Y", "Z"],         # 1-qubit Clifford (24 elements)
+    "D_lite": ["H", "S", "T", "X", "Y", "Z"],    # 1-qubit Clifford+T (low T-count)
 }
 TIER_TARGET_KIND = {
     "A": "state", "B": "state",
@@ -245,7 +245,9 @@ def _gen_hidden(tier, n_tasks, qubit_range, gen_gate_range, rng):
             generator=gen, oracle_features=oracle_features,
         ))
     if len(tasks) < n_tasks:
-        raise RuntimeError(f"tier {tier}: only generated {len(tasks)}/{n_tasks}")
+        print(f"  [warn] tier {tier}: dedup ceiling reached "
+              f"({len(tasks)}/{n_tasks}); proceeding with what we have.",
+              flush=True)
     return tasks
 
 
@@ -261,13 +263,13 @@ def gen_cliffordT_tasks(n_tasks, qubit_range=(2, 2), gen_gate_range=(4, 12), rng
     return _gen_hidden("D", n_tasks, qubit_range, gen_gate_range, rng)
 
 
-def gen_clifford_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 3), rng=None):
+def gen_clifford_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 6), rng=None):
     """1-qubit Clifford unitaries: small enough that examples are highly transferable."""
     return _gen_hidden("C_lite", n_tasks, qubit_range, gen_gate_range, rng)
 
 
-def gen_cliffordT_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 4), rng=None):
-    """1-qubit Clifford+T unitaries with low T-count (random {H,S,T} sequences)."""
+def gen_cliffordT_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 6), rng=None):
+    """1-qubit Clifford+T unitaries with low T-count (random {H,S,T,X,Y,Z} sequences)."""
     return _gen_hidden("D_lite", n_tasks, qubit_range, gen_gate_range, rng)
 
 
