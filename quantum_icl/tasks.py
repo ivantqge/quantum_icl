@@ -31,11 +31,12 @@ TIER_GATE_SETS = {
     # baseline-success regime where ICL/feedback effects are visible.
     "C_lite": ["H", "S", "X", "Y", "Z"],         # 1-qubit Clifford (24 elements)
     "D_lite": ["H", "S", "T", "X", "Y", "Z"],    # 1-qubit Clifford+T (low T-count)
+    "D_mid":  ["H", "S", "T", "CX", "CZ"],       # 2-qubit Clifford+T (depth ~6-10)
 }
 TIER_TARGET_KIND = {
     "A": "state", "B": "state",
     "C": "unitary", "D": "unitary",
-    "C_lite": "unitary", "D_lite": "unitary",
+    "C_lite": "unitary", "D_lite": "unitary", "D_mid": "unitary",
 }
 
 
@@ -273,6 +274,16 @@ def gen_cliffordT_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 6),
     return _gen_hidden("D_lite", n_tasks, qubit_range, gen_gate_range, rng)
 
 
+def gen_cliffordT_mid_tasks(n_tasks, qubit_range=(2, 2), gen_gate_range=(6, 10), rng=None):
+    """2-qubit Clifford+T unitaries at intermediate difficulty (depth ~6-10).
+
+    Gate set {H,S,T,CX,CZ}; expected T-count ~1.2-2.0 per task with random
+    sampling (1/5 of gates are T). Calibrate via gen_gate_range to hit the
+    20-60% baseline zero-shot success regime.
+    """
+    return _gen_hidden("D_mid", n_tasks, qubit_range, gen_gate_range, rng)
+
+
 GENERATORS = {
     "A": gen_graph_state_tasks,
     "B": gen_stabilizer_tasks,
@@ -280,6 +291,7 @@ GENERATORS = {
     "D": gen_cliffordT_tasks,
     "C_lite": gen_clifford_lite_tasks,
     "D_lite": gen_cliffordT_lite_tasks,
+    "D_mid": gen_cliffordT_mid_tasks,
 }
 
 
