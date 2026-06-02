@@ -129,6 +129,7 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr):
             backend, model=cfg["llm"]["model"],
             temperature=cfg["llm"]["temperature"],
             max_tokens=cfg["llm"]["max_tokens"],
+            adapter_path=cfg["llm"].get("adapter_path"),
         )
 
     attempts_rec, tasks_rec, libcurve_rec = [], [], []
@@ -339,6 +340,8 @@ def main():
     ap.add_argument("--backend", default=None,
                     choices=["mock", "openrouter", "grok", "local"])
     ap.add_argument("--model", default=None)
+    ap.add_argument("--adapter-path", default=None,
+                    help="LoRA adapter directory (local backend only)")
     ap.add_argument("--tiers", default=None, help="comma list, e.g. A,B")
     ap.add_argument("--conditions", default=None, help="comma list")
     ap.add_argument("--num-tasks", type=int, default=None,
@@ -364,6 +367,8 @@ def main():
         cfg["llm"]["backend"] = args.backend
     if args.model:
         cfg["llm"]["model"] = args.model
+    if args.adapter_path:
+        cfg["llm"]["adapter_path"] = args.adapter_path
     if args.seed is not None:
         cfg["seed"] = args.seed
     if args.tiers:

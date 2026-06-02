@@ -178,7 +178,8 @@ class LocalHFLLM(BaseLLM):
     are reserved for cheap smoke/pilot runs.
     """
 
-    def __init__(self, model, max_tokens=1024, temperature=0.0, device="auto"):
+    def __init__(self, model, max_tokens=1024, temperature=0.0, device="auto",
+                 adapter_path=None):
         super().__init__()
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -187,6 +188,12 @@ class LocalHFLLM(BaseLLM):
         self.model = AutoModelForCausalLM.from_pretrained(
             model, torch_dtype="auto", device_map=device,
         )
+        if adapter_path:
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, adapter_path)
+            self.model.eval()
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.max_tokens = max_tokens
         self.temperature = temperature
 
@@ -231,5 +238,6 @@ def make_llm(backend: str, tasks=None, **kwargs) -> BaseLLM:
     if backend == "local":
         return LocalHFLLM(model=kwargs["model"],
                           temperature=kwargs.get("temperature", 0.0),
-                          max_tokens=kwargs.get("max_tokens", 1024))
+                          max_tokens=kwargs.get("max_tokens", 1024),
+                          adapter_path=kwargs.get("adapter_path"))
     raise ValueError(f"unknown backend {backend!r}")
