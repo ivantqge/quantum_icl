@@ -98,6 +98,19 @@ Target: 8–10 slides for a 3–5 minute demo video, with the four required Q1�
 
 ---
 
+## Figures (drop directly into the deck)
+
+All figures are in `paper/figures/` as both PNG (for the deck) and PDF (for LaTeX).
+
+| File | Slide | Purpose |
+|---|---|---|
+| `fig1_main_2x2.png` | Slide 5 (headline results) | 3-panel grouped bar chart: 4 conditions × 3 frozen models × 3 tiers. The 2×2 ablation at a glance. |
+| `fig2_sft_curve.png` | Slide 6 (SFT data-size) | 3-panel line chart: solve rate vs SFT corpus size (0 → 3600) × condition. Shows the **non-monotone** curve and U-shaped struct+fb recovery. |
+| `fig3_oracle_vs_struct.png` | Slide 7 (Oracle probe) | Side-by-side bars: structural (target features) vs oracle (hidden gen features) on Gemini-3-Flash. Identical bars ⇒ retrieval bottleneck isn't features. |
+| `fig4_base_vs_sft.png` | Slide 6 supplement | Paired base-Qwen vs SFT-3600 across all 12 cells, same seeds. Shows where SFT wins (and the one cell where it interferes). |
+| `fig5_attempts_per_solved.png` | Slide 5 efficiency angle | Tier D-lite: mean attempts/solve per condition × model. Shows feedback adds *and* makes solves cheaper. |
+| `fig6_capability_ladder.png` | Slide 8 (use cases) | Best-cell solve rate per model × tier. The visual story for the capability-ladder claim. |
+
 ## Notes for the demo recording
 
 1. **Open with a 15-second live run** of `python -m quantum_icl.experiment --backend mock --tiers B --conditions structural_retrieval_plus_feedback --num-tasks 5 --no-plots` — shows that the pipeline really runs.
