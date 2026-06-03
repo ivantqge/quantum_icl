@@ -25,6 +25,8 @@ CONDITIONS="${CONDITIONS:-zero_shot,feedback_only,structural_retrieval_only,stru
 CONDITIONS="${CONDITIONS//|/,}"
 TIERS="${TIERS//|/,}"
 ATTEMPTS="${ATTEMPTS:-3}"
+TEMPERATURE="${TEMPERATURE:-0.0}"
+PROMPT_VARIANT="${PROMPT_VARIANT:-default}"
 
 python - <<'PY' || echo "NO DIRECT NET"
 import urllib.request
@@ -36,5 +38,6 @@ python -u -m quantum_icl.experiment \
     --backend openrouter --model "$MODEL" \
     --tiers "$TIERS" --conditions "$CONDITIONS" \
     --num-tasks "$NUM_TASKS" --attempts "$ATTEMPTS" --max-tokens 1024 --seed 42 \
-    --workers 12 --tag "$TAG" --outdir results_qicl
+    --workers 12 --tag "$TAG" --outdir results_qicl \
+    --temperature "$TEMPERATURE" --prompt-variant "$PROMPT_VARIANT"
 echo "=== sweep done ==="

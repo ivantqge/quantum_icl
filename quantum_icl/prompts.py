@@ -35,9 +35,22 @@ _TIER_HINTS = {
 }
 
 
-def system_prompt(task) -> str:
+_COT_SUFFIX = (
+    "\n\nThink step by step BEFORE emitting JSON:\n"
+    "  1. Identify the structure of the target (sparsity, dominant entries, "
+    "any obvious factorization).\n"
+    "  2. Pick a gate sequence that you believe realizes the target, "
+    "justifying each gate's role in 1-2 sentences.\n"
+    "  3. Mentally execute the sequence on |0...0> and check it matches the "
+    "target up to global phase.\n"
+    "  4. ONLY after this reasoning, emit the strict JSON fenced block.\n"
+    "Keep the reasoning concise (max ~120 words) but explicit."
+)
+
+
+def system_prompt(task, prompt_variant: str = "default") -> str:
     allowed = ", ".join(f"{g} ({_GATE_HELP[g]})" for g in task.gate_set)
-    return (
+    base = (
         "You are a quantum circuit synthesizer. Given a target, output a "
         "circuit that realizes it, starting from |0...0>.\n\n"
         f"Allowed gates for THIS task: {allowed}.\n"
@@ -51,6 +64,9 @@ def system_prompt(task) -> str:
         "gates and qubit indices in [0, N)."
         + _TIER_HINTS.get(task.tier, "")
     )
+    if prompt_variant == "cot":
+        base += _COT_SUFFIX
+    return base
 
 
 def format_example(ex: dict) -> str:
@@ -60,7 +76,7 @@ def format_example(ex: dict) -> str:
     )
 
 
-def build_messages(task, examples, feedback=None) -> tuple:
+def build_messages(task, examples, feedback=None, prompt_variant="default") -> tuple:
     """Return (system_message, user_message). `examples` is a list of entries
     each having 'description' and 'solution_circuit' (library entries or fixed
     examples); pass [] for zero-shot. `feedback`, if given, describes the
@@ -107,7 +123,7 @@ def build_messages(task, examples, feedback=None) -> tuple:
         "Give a one-sentence strategy, then output the circuit as JSON in a "
         "```json fenced block matching the schema exactly."
     )
-    return system_prompt(task), "\n".join(parts)
+    return system_prompt(task, prompt_variant=prompt_variant), "\n".join(parts)
 
 
 # --- fixed few-shot examples ----------------------------------------------

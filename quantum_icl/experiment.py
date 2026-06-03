@@ -168,7 +168,10 @@ def _run_block(cfg, condition, tier, tier_tasks, all_tasks, exp, k, thr,
 
         for attempt in range(exp["attempts_per_task"]):
             used = attempt + 1
-            system, user = build_messages(task, examples, feedback=feedback)
+            system, user = build_messages(
+                task, examples, feedback=feedback,
+                prompt_variant=cfg.get("experiment", {}).get("prompt_variant", "default"),
+            )
             try:
                 resp = llm.generate(system, user)
             except Exception as e:
@@ -379,6 +382,11 @@ def main():
                     help="max output tokens per call (raise for reasoning models)")
     ap.add_argument("--workers", type=int, default=None,
                     help="concurrent (condition,tier) blocks (default 1)")
+    ap.add_argument("--prompt-variant", default=None,
+                    choices=["default", "cot"],
+                    help="prompt style: default (current) or cot (chain-of-thought)")
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="sampling temperature (default 0)")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--tag", default=None)
     ap.add_argument("--outdir", default=None)
@@ -409,6 +417,10 @@ def main():
         cfg["llm"]["max_tokens"] = args.max_tokens
     if args.workers is not None:
         cfg["experiment"]["workers"] = args.workers
+    if args.prompt_variant is not None:
+        cfg["experiment"]["prompt_variant"] = args.prompt_variant
+    if args.temperature is not None:
+        cfg["llm"]["temperature"] = args.temperature
     if args.outdir:
         cfg["experiment"]["outdir"] = args.outdir
     if args.num_tasks is not None:
