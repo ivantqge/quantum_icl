@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
         "D": {"num_tasks": 30, "qubit_range": [2, 2], "gen_gate_range": [4, 12]},
         "C_lite": {"num_tasks": 20, "qubit_range": [1, 1], "gen_gate_range": [1, 6]},
         "D_lite": {"num_tasks": 30, "qubit_range": [1, 1], "gen_gate_range": [1, 6]},
-        "D_mid":  {"num_tasks": 20, "qubit_range": [2, 2], "gen_gate_range": [6, 10]},
+        "D_mid":  {"num_tasks": 20, "qubit_range": [2, 2], "gen_gate_range": [4, 7]},
     },
 }
 

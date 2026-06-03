@@ -20,6 +20,10 @@ TAG="${TAG:?set TAG}"
 NUM_TASKS="${NUM_TASKS:-100}"
 TIERS="${TIERS:-B,C_lite,D_lite}"
 CONDITIONS="${CONDITIONS:-zero_shot,feedback_only,structural_retrieval_only,structural_retrieval_plus_feedback}"
+# Workaround for sbatch --export which uses commas as variable separators:
+# users pass conditions as 'a|b|c' and we convert to 'a,b,c' here.
+CONDITIONS="${CONDITIONS//|/,}"
+TIERS="${TIERS//|/,}"
 ATTEMPTS="${ATTEMPTS:-3}"
 
 python - <<'PY' || echo "NO DIRECT NET"

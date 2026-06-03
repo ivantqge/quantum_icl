@@ -274,8 +274,8 @@ def gen_cliffordT_lite_tasks(n_tasks, qubit_range=(1, 1), gen_gate_range=(1, 6),
     return _gen_hidden("D_lite", n_tasks, qubit_range, gen_gate_range, rng)
 
 
-def gen_cliffordT_mid_tasks(n_tasks, qubit_range=(2, 2), gen_gate_range=(6, 10), rng=None):
-    """2-qubit Clifford+T unitaries at intermediate difficulty (depth ~6-10).
+def gen_cliffordT_mid_tasks(n_tasks, qubit_range=(2, 2), gen_gate_range=(4, 7), rng=None):
+    """2-qubit Clifford+T unitaries at intermediate difficulty (depth ~4-7).
 
     Gate set {H,S,T,CX,CZ}; expected T-count ~1.2-2.0 per task with random
     sampling (1/5 of gates are T). Calibrate via gen_gate_range to hit the

@@ -24,6 +24,9 @@ TAG="${TAG:?set TAG}"
 NUM_TASKS="${NUM_TASKS:-100}"
 TIERS="${TIERS:-B,C_lite,D_lite}"
 CONDITIONS="${CONDITIONS:-zero_shot,feedback_only,structural_retrieval_only,structural_retrieval_plus_feedback}"
+# Workaround for sbatch --export comma issue: pipes -> commas.
+CONDITIONS="${CONDITIONS//|/,}"
+TIERS="${TIERS//|/,}"
 ATTEMPTS="${ATTEMPTS:-3}"
 
 ADAPTER_ARG=""
