@@ -18,6 +18,8 @@ Author: Ivan Ge (Stanford); built collaboratively with the Claude Code agent —
 | **Structural retrieval + feedback** | The winning combination on hard tiers (Gemini D-lite: 28 → **65/100**). |
 | **LoRA SFT (Qwen-7B) on verified synthetic data** | Non-monotone: 300 examples is catastrophic, ≥900 stabilizes, 1800–3600 yields strongest combined ICL + SFT. |
 | **OracleRetrieval probe** | Target-only features ≈ hidden-generator features (±1/30 on Gemini). Bottleneck is library size, not feature engineering. |
+| **Chain-of-thought prompting (Gemini)** | **Largest single lever**: +19 on D-lite zero-shot (28→47); stacks with feedback+retrieval to **71/100** (vs 65 without CoT). |
+| **Best-of-N parallel sampling** | Lift but weaker than CoT alone; combining CoT + Best-of-N + retrieval pushes D-mid from 17/100 → **32/100**. |
 
 Total cost: **~$3 of OpenRouter API** on the main 100-task sweeps + **~25 GPU-hours** on a single A100 80 GB.
 

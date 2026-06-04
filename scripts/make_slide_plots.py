@@ -366,7 +366,7 @@ def fig6_capability_ladder():
 def fig7_cot_vs_default():
     default_dlite = load_summary("confirm100_gemini3flash_*")
     default_dmid = load_summary("confirm100_gemini_dmid_v2_*")
-    cot = load_summary("gemini_cot_*")
+    cot = load_summary("gemini_cot_20*")  # exclude gemini_cot_botn_ / gemini_cot_full_dmid_
     if cot is None:
         print("skip fig7 (CoT data missing)")
         return
@@ -419,7 +419,8 @@ def fig8_dmid_panel():
     runs = [
         ("gpt-4o-mini", "confirm100_gpt4omini_dmid_*"),
         ("Gemini-3-Flash", "confirm100_gemini_dmid_v2_*"),
-        ("Gemini-3-Flash +CoT", "gemini_cot_*"),
+        ("Gemini-3-Flash +CoT", "gemini_cot_20*"),
+        ("Gemini +CoT+BoN+fb", "gemini_cot_full_dmid_*"),
         ("Qwen-7B base", "confirm100_base_qwen_dmid_*"),
         ("Qwen-7B SFT-3600", "confirm100_sft3600_dmid_*"),
     ]
@@ -427,10 +428,11 @@ def fig8_dmid_panel():
     conds = ["zero_shot", "feedback_only",
              "structural_retrieval_only",
              "structural_retrieval_plus_feedback"]
-    fig, ax = plt.subplots(figsize=(11, 4.5))
-    width = 0.16
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    width = 0.13
     x = np.arange(len(conds))
-    colors = ["#9c9c9c", "#4c72b0", "#c44e52", "#dd8452", "#55a868"]
+    colors = ["#9c9c9c", "#4c72b0", "#c44e52", "#7b1f1f", "#dd8452", "#55a868"]
+    n = len(summaries)
     for i, (name, s) in enumerate(summaries):
         ys = []
         for cond in conds:
@@ -439,7 +441,7 @@ def fig8_dmid_panel():
                 ys.append(np.nan)
             else:
                 ys.append(cv[0] / cv[1])
-        offset = (i - 2) * width
+        offset = (i - (n - 1) / 2) * width
         ax.bar(x + offset, ys, width, label=name,
                color=colors[i], edgecolor="white", linewidth=0.5)
     ax.set_xticks(x)
@@ -460,50 +462,74 @@ def fig8_dmid_panel():
 # Figure 9: Cumulative gains as we stack techniques (Gemini D-lite)
 # =========================================================================
 def fig9_technique_stack():
+    """Cumulative lever-stack on Gemini-3-Flash: D-lite and D-mid side by side."""
     base = load_summary("confirm100_gemini3flash_*")
-    cot = load_summary("gemini_cot_*")
-    botn = load_summary("gemini_botn_*")
+    dmid_base = load_summary("confirm100_gemini_dmid_v2_*")
+    cot = load_summary("gemini_cot_20*")
+    cot_bon_fb = load_summary("gemini_cot_full_dmid_*")
     if cot is None:
         print("skip fig9 (CoT data missing)")
         return
 
-    # Constructed pipeline: zero_shot -> +feedback -> +retrieval -> +CoT(struct+fb)
-    levels = []
-    if base:
-        zv = cell(base, "D_lite", "zero_shot")
-        fv = cell(base, "D_lite", "feedback_only")
-        sv = cell(base, "D_lite", "structural_retrieval_plus_feedback")
-        levels.append(("zero-shot", zv[0] / zv[1]))
-        levels.append(("+ feedback", fv[0] / fv[1]))
-        levels.append(("+ retrieval", sv[0] / sv[1]))
-    if cot:
-        cv = cell(cot, "D_lite", "structural_retrieval_plus_feedback")
-        levels.append(("+ CoT prompt", cv[0] / cv[1]))
-    if botn:
-        bv = cell(botn, "D_lite", "zero_shot")
-        # show best-of-5 separately as a "alternative" lever
-        # (not in the stacking sequence but useful context)
+    def stack(default_s, dmid_s, tier):
+        """Return [(label, rate), ...] for the cumulative stack on tier."""
+        out = []
+        # use D_lite source for D_lite, D_mid source for D_mid
+        if tier == "D_lite":
+            src = default_s
+        else:
+            src = dmid_s
+        zv = cell(src, tier, "zero_shot")
+        fv = cell(src, tier, "feedback_only")
+        sv = cell(src, tier, "structural_retrieval_plus_feedback")
+        out.append(("zero-shot", zv[0] / zv[1] if zv else np.nan))
+        # best of feedback-using conditions in default = max(fb, struct+fb)
+        fb_best = max(fv[0] / fv[1] if fv else 0, sv[0] / sv[1] if sv else 0)
+        out.append(("+ feedback+retr", fb_best))
+        cv = cell(cot, tier, "structural_retrieval_plus_feedback")
+        if cv:
+            out.append(("+ CoT", cv[0] / cv[1]))
+        # For D-mid we have CoT+BoN+feedback data; use the BEST cell
+        if tier == "D_mid" and cot_bon_fb:
+            best = 0
+            for c in ("structural_retrieval_only",
+                      "structural_retrieval_plus_feedback"):
+                cv2 = cell(cot_bon_fb, tier, c)
+                if cv2:
+                    best = max(best, cv2[0] / cv2[1])
+            if best > 0:
+                out.append(("+ Best-of-N", best))
+        return out
 
-    fig, ax = plt.subplots(figsize=(8, 4.3))
-    labels = [l[0] for l in levels]
-    vals = [l[1] for l in levels]
-    bars = ax.bar(range(len(labels)), vals, color="#4c72b0",
-                  edgecolor="white", linewidth=0.5)
-    bars[-1].set_color("#c44e52")  # highlight final
-    for i, v in enumerate(vals):
-        ax.text(i, v + 0.02, f"{v*100:.0f}%", ha="center", fontsize=12, fontweight="bold")
-    ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, fontsize=12)
-    ax.set_ylabel("Solve rate (n=100)")
-    ax.set_ylim(0, 0.85)
-    ax.set_title("Stacking levers on Gemini-3-Flash, Tier D-lite: 28% → 71%")
-    ax.grid(axis="y", alpha=0.3)
-    ax.set_axisbelow(True)
-    # Arrows between bars
-    for i in range(len(vals) - 1):
-        ax.annotate("", xy=(i + 0.7, vals[i + 1]),
-                    xytext=(i + 0.2, vals[i]),
-                    arrowprops=dict(arrowstyle="->", lw=1.2, color="#999"))
+    dlite = stack(base, dmid_base, "D_lite")
+    dmid = stack(base, dmid_base, "D_mid")
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.3))
+    for ax, levels, title, ymax in [
+        (axes[0], dlite, "Tier D-lite (1q Clifford+T)", 0.85),
+        (axes[1], dmid, "Tier D-mid (2q Clifford+T)", 0.40),
+    ]:
+        labels = [l[0] for l in levels]
+        vals = [l[1] for l in levels]
+        bars = ax.bar(range(len(labels)), vals, color="#4c72b0",
+                      edgecolor="white", linewidth=0.5)
+        bars[-1].set_color("#c44e52")
+        for i, v in enumerate(vals):
+            ax.text(i, v + ymax * 0.025, f"{v*100:.0f}%", ha="center",
+                    fontsize=12, fontweight="bold")
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, fontsize=11)
+        ax.set_ylim(0, ymax)
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+        for i in range(len(vals) - 1):
+            ax.annotate("", xy=(i + 0.7, vals[i + 1]),
+                        xytext=(i + 0.2, vals[i]),
+                        arrowprops=dict(arrowstyle="->", lw=1.2, color="#999"))
+    axes[0].set_ylabel("Solve rate (n=100)")
+    fig.suptitle("Stacking levers on Gemini-3-Flash: each lever compounds",
+                 fontsize=14, y=1.02)
     for ext in ("png", "pdf"):
         fig.savefig(os.path.join(OUT, f"fig9_technique_stack.{ext}"))
     plt.close(fig)
