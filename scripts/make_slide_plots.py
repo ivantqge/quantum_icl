@@ -361,6 +361,156 @@ def fig6_capability_ladder():
 
 
 # =========================================================================
+# Figure 7: CoT vs default prompt on Gemini-3-Flash (D-lite + D-mid)
+# =========================================================================
+def fig7_cot_vs_default():
+    default_dlite = load_summary("confirm100_gemini3flash_*")
+    default_dmid = load_summary("confirm100_gemini_dmid_v2_*")
+    cot = load_summary("gemini_cot_*")
+    if cot is None:
+        print("skip fig7 (CoT data missing)")
+        return
+    conds = ["zero_shot", "feedback_only",
+             "structural_retrieval_only",
+             "structural_retrieval_plus_feedback"]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
+
+    def panel(ax, default_s, tier, title):
+        d, c = [], []
+        for cond in conds:
+            dv = cell(default_s, tier, cond)
+            cv = cell(cot, tier, cond)
+            d.append(dv[0] / dv[1] if dv else np.nan)
+            c.append(cv[0] / cv[1] if cv else np.nan)
+        x = np.arange(len(conds))
+        w = 0.4
+        ax.bar(x - w / 2, d, w, color="#4c72b0", label="default prompt",
+               edgecolor="white", linewidth=0.5)
+        ax.bar(x + w / 2, c, w, color="#c44e52", label="+ chain-of-thought",
+               edgecolor="white", linewidth=0.5)
+        for i, (a, b) in enumerate(zip(d, c)):
+            if not np.isnan(a):
+                ax.text(i - w / 2, a + 0.02, f"{a:.2f}", ha="center", fontsize=9)
+            if not np.isnan(b):
+                ax.text(i + w / 2, b + 0.02, f"{b:.2f}", ha="center", fontsize=9)
+        ax.set_xticks(x)
+        ax.set_xticklabels([COND_LABEL[c] for c in conds], rotation=25, ha="right")
+        ax.set_ylim(0, 1.0)
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+    panel(axes[0], default_dlite, "D_lite", "Tier D-lite (1q Clifford+T)")
+    panel(axes[1], default_dmid, "D_mid", "Tier D-mid (2q Clifford+T)")
+    axes[0].set_ylabel("Solve rate (n=100)")
+    axes[-1].legend(loc="upper left", frameon=True)
+    fig.suptitle("Chain-of-thought prompting on Gemini-3-Flash: +6 to +19 points",
+                 fontsize=14, y=1.02)
+    for ext in ("png", "pdf"):
+        fig.savefig(os.path.join(OUT, f"fig7_cot_vs_default.{ext}"))
+    plt.close(fig)
+    print("wrote fig7_cot_vs_default")
+
+
+# =========================================================================
+# Figure 8: D-mid panel across 4 models (gpt-4o-mini, Gemini, Qwen base, SFT)
+# =========================================================================
+def fig8_dmid_panel():
+    runs = [
+        ("gpt-4o-mini", "confirm100_gpt4omini_dmid_*"),
+        ("Gemini-3-Flash", "confirm100_gemini_dmid_v2_*"),
+        ("Gemini-3-Flash +CoT", "gemini_cot_*"),
+        ("Qwen-7B base", "confirm100_base_qwen_dmid_*"),
+        ("Qwen-7B SFT-3600", "confirm100_sft3600_dmid_*"),
+    ]
+    summaries = [(name, load_summary(g)) for name, g in runs]
+    conds = ["zero_shot", "feedback_only",
+             "structural_retrieval_only",
+             "structural_retrieval_plus_feedback"]
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    width = 0.16
+    x = np.arange(len(conds))
+    colors = ["#9c9c9c", "#4c72b0", "#c44e52", "#dd8452", "#55a868"]
+    for i, (name, s) in enumerate(summaries):
+        ys = []
+        for cond in conds:
+            cv = cell(s, "D_mid", cond)
+            if cv is None:
+                ys.append(np.nan)
+            else:
+                ys.append(cv[0] / cv[1])
+        offset = (i - 2) * width
+        ax.bar(x + offset, ys, width, label=name,
+               color=colors[i], edgecolor="white", linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels([COND_LABEL[c] for c in conds], rotation=20, ha="right")
+    ax.set_ylabel("Solve rate (n=100, or 10 if early-stopped)")
+    ax.set_ylim(0, 0.30)
+    ax.set_title("D-mid (2q Clifford+T, depth 4-7): the new hard tier across 5 backbones")
+    ax.legend(loc="upper left", frameon=True, fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    for ext in ("png", "pdf"):
+        fig.savefig(os.path.join(OUT, f"fig8_dmid_panel.{ext}"))
+    plt.close(fig)
+    print("wrote fig8_dmid_panel")
+
+
+# =========================================================================
+# Figure 9: Cumulative gains as we stack techniques (Gemini D-lite)
+# =========================================================================
+def fig9_technique_stack():
+    base = load_summary("confirm100_gemini3flash_*")
+    cot = load_summary("gemini_cot_*")
+    botn = load_summary("gemini_botn_*")
+    if cot is None:
+        print("skip fig9 (CoT data missing)")
+        return
+
+    # Constructed pipeline: zero_shot -> +feedback -> +retrieval -> +CoT(struct+fb)
+    levels = []
+    if base:
+        zv = cell(base, "D_lite", "zero_shot")
+        fv = cell(base, "D_lite", "feedback_only")
+        sv = cell(base, "D_lite", "structural_retrieval_plus_feedback")
+        levels.append(("zero-shot", zv[0] / zv[1]))
+        levels.append(("+ feedback", fv[0] / fv[1]))
+        levels.append(("+ retrieval", sv[0] / sv[1]))
+    if cot:
+        cv = cell(cot, "D_lite", "structural_retrieval_plus_feedback")
+        levels.append(("+ CoT prompt", cv[0] / cv[1]))
+    if botn:
+        bv = cell(botn, "D_lite", "zero_shot")
+        # show best-of-5 separately as a "alternative" lever
+        # (not in the stacking sequence but useful context)
+
+    fig, ax = plt.subplots(figsize=(8, 4.3))
+    labels = [l[0] for l in levels]
+    vals = [l[1] for l in levels]
+    bars = ax.bar(range(len(labels)), vals, color="#4c72b0",
+                  edgecolor="white", linewidth=0.5)
+    bars[-1].set_color("#c44e52")  # highlight final
+    for i, v in enumerate(vals):
+        ax.text(i, v + 0.02, f"{v*100:.0f}%", ha="center", fontsize=12, fontweight="bold")
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_ylabel("Solve rate (n=100)")
+    ax.set_ylim(0, 0.85)
+    ax.set_title("Stacking levers on Gemini-3-Flash, Tier D-lite: 28% → 71%")
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    # Arrows between bars
+    for i in range(len(vals) - 1):
+        ax.annotate("", xy=(i + 0.7, vals[i + 1]),
+                    xytext=(i + 0.2, vals[i]),
+                    arrowprops=dict(arrowstyle="->", lw=1.2, color="#999"))
+    for ext in ("png", "pdf"):
+        fig.savefig(os.path.join(OUT, f"fig9_technique_stack.{ext}"))
+    plt.close(fig)
+    print("wrote fig9_technique_stack")
+
+
+# =========================================================================
 def main():
     print(f"Output dir: {OUT}")
     fig1_main_2x2()
@@ -369,6 +519,9 @@ def main():
     fig4_base_vs_sft()
     fig5_attempts_per_solved()
     fig6_capability_ladder()
+    fig7_cot_vs_default()
+    fig8_dmid_panel()
+    fig9_technique_stack()
     print("\nAll figures in", OUT)
     for f in sorted(os.listdir(OUT)):
         if f.endswith((".png", ".pdf")):
