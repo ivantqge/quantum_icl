@@ -28,6 +28,8 @@ CONDITIONS="${CONDITIONS:-zero_shot,feedback_only,structural_retrieval_only,stru
 CONDITIONS="${CONDITIONS//|/,}"
 TIERS="${TIERS//|/,}"
 ATTEMPTS="${ATTEMPTS:-3}"
+TEMPERATURE="${TEMPERATURE:-0.0}"
+PROMPT_VARIANT="${PROMPT_VARIANT:-default}"
 
 ADAPTER_ARG=""
 if [ -n "$ADAPTER" ]; then
@@ -39,5 +41,6 @@ python -u -m quantum_icl.experiment \
     --backend local --model Qwen/Qwen2.5-7B-Instruct $ADAPTER_ARG \
     --tiers "$TIERS" --conditions "$CONDITIONS" \
     --num-tasks "$NUM_TASKS" --attempts "$ATTEMPTS" --max-tokens 1024 --seed 42 \
-    --workers 1 --tag "$TAG" --outdir results_qicl
+    --workers 1 --tag "$TAG" --outdir results_qicl \
+    --temperature "$TEMPERATURE" --prompt-variant "$PROMPT_VARIANT"
 echo "=== eval done ==="
