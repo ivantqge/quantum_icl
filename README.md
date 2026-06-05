@@ -1,208 +1,182 @@
-# Quantum-ICL
+# quantum-icl
 
-> **Simulator-verified in-context learning and lightweight LoRA fine-tuning for quantum circuit synthesis.**
->
-> A frozen LLM proposes circuits in strict JSON, an exact quantum simulator verifies them, and verified solutions feed back into future prompts. We test whether **verifier feedback**, **structural retrieval**, and **synthetic-data SFT** improve frozen-LLM performance — and find a clean answer.
+A Python framework for studying **simulator-verified in-context learning** and **LoRA fine-tuning** for quantum circuit synthesis. A frozen (or LoRA-tuned) LLM proposes a circuit in strict JSON; an exact quantum simulator (Cirq) verifies it; verified solutions accumulate into a retrieval-indexed library that is fed back into future prompts. The framework factorially measures the contribution of three mechanisms — **verifier-feedback self-refinement**, **structural retrieval**, and **synthetic-data SFT** — across four difficulty tiers (graph states, stabilizer states, 1-qubit Clifford / Clifford+T, 2-qubit Clifford+T) and four LLM backends (OpenRouter, xAI Grok, local Hugging Face, deterministic mock).
 
-Public code: `github.com/ivantqge/quantum_icl`
-Author: Ivan Ge (Stanford); built collaboratively with the Claude Code agent — see *AI & tool disclosure* below.
-
----
-
-## TL;DR (headline findings, 100 tasks/cell, n=4 backbones)
-
-| Lever | Effect |
-|---|---|
-| **Verifier-feedback self-refinement** | Dominant; helps every model, every tier. |
-| **Structural retrieval alone** | Flat or negative in 9/12 cells. |
-| **Structural retrieval + feedback** | The winning combination on hard tiers (Gemini D-lite: 28 → **65/100**). |
-| **LoRA SFT (Qwen-7B) on verified synthetic data** | Non-monotone: 300 examples is catastrophic, ≥900 stabilizes, 1800–3600 yields strongest combined ICL + SFT. |
-| **OracleRetrieval probe** | Target-only features ≈ hidden-generator features (±1/30 on Gemini). Bottleneck is library size, not feature engineering. |
-| **Chain-of-thought prompting (Gemini)** | **Largest single lever**: +19 on D-lite zero-shot (28→47); stacks with feedback+retrieval to **71/100** (vs 65 without CoT). |
-| **Best-of-N parallel sampling** | Lift but weaker than CoT alone; combining CoT + Best-of-N + retrieval pushes D-mid from 17/100 → **32/100**. |
-
-Total cost: **~$3 of OpenRouter API** on the main 100-task sweeps + **~25 GPU-hours** on a single A100 80 GB.
-
----
-
-## Layout
+## Repository layout
 
 ```
-quantum_icl/                    # the package
-  schema.py                     # strict circuit-JSON validator (rejects unsupported gates)
-  simulate.py                   # cirq simulation, fidelity, circuit metrics, target features
-  tasks.py                      # tier generators (B, C-lite, D-lite, D-mid, A, C, D, ...)
-  verify.py                     # schema -> simulate -> compare, global-phase invariant
-  library.py                    # verified-solution storage
-  retrieval.py                  # NoRetrieval / Random / Text(TF-IDF) / Structural / Oracle
-  prompts.py                    # per-tier system prompt + feedback augmentation
-  llm.py                        # mock / OpenRouter / Grok / Local HF backends
-  metrics.py                    # logging + aggregation
-  experiment.py                 # config-driven runner (workers, --rebuild, --adapter-path)
-  plots.py                      # success-vs-X, library growth, cost-per-solved figures
-  sft/                          # SFT data builder + LoRA trainer (TRL SFTTrainer)
-    build_dataset.py
-    train.py
-scripts/                        # Slurm batch scripts (CPU API sweep, GPU SFT, GPU Qwen eval, smoke checks)
-tests/                          # 28 unit tests covering schema, verifier, retriever, SFT, Oracle
-paper/paper.tex                 # LaTeX writeup (this study)
-SLIDES.md                       # slide-deck outline mapped to rubric
+quantum_icl/                # the framework (12 modules)
+  schema.py                 # strict circuit-JSON validator
+  simulate.py               # cirq simulation, fidelity, target features
+  tasks.py                  # tier generators (A, B, C, D, C-lite, D-lite, D-mid)
+  verify.py                 # global-phase-invariant verification
+  library.py                # verified-solution store
+  retrieval.py              # none / random / text-TFIDF / structural / oracle retrievers
+  prompts.py                # per-tier prompts, feedback augmentation, CoT variant
+  llm.py                    # mock / OpenRouter / xAI Grok / local HF backends
+  metrics.py                # per-attempt logging + summary aggregation
+  experiment.py             # config-driven runner with block-level parallelism
+  plots.py                  # 5 default result figures
+  config.yaml               # cheap pilot defaults
+  sft/                      # supervised fine-tuning subpackage
+    build_dataset.py        # chat-format dataset from verified generator circuits
+    train.py                # LoRA SFT via TRL SFTTrainer (assistant-only loss)
+tests/                      # pytest suite (verifier correctness, retriever, parsing)
+requirements.txt
 ```
 
----
+## Setup
 
-## Quick start
+Tested on NERSC Perlmutter with `python/3.11`.
 
 ```bash
-# (NERSC Perlmutter; tested with python/3.11-24.1.0)
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# Free pipeline smoke (mock backend, no API/GPU)
-python -m quantum_icl.experiment --backend mock --tiers B,C_lite,D_lite \
-    --conditions zero_shot,feedback_only,structural_retrieval_only,structural_retrieval_plus_feedback \
-    --num-tasks 5 --workers 4 --tag smoke --no-plots
+For the API backends, export the relevant key:
 
-# Reproduce a 100-task Gemini sweep ($1.50, 15 min)
-export OPENROUTER_API_KEY=sk-or-v1-...
-python -m quantum_icl.experiment --backend openrouter --model google/gemini-3-flash-preview \
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...     # for --backend openrouter
+export XAI_API_KEY=xai-...                 # for --backend grok
+```
+
+For the local backend, point the Hugging Face cache somewhere with enough space:
+
+```bash
+export HF_HOME=/path/to/large/scratch/hf_cache
+```
+
+## Usage
+
+### 1. Free smoke test (mock backend, no API or GPU)
+
+```bash
+python -m quantum_icl.experiment \
+    --backend mock \
     --tiers B,C_lite,D_lite \
     --conditions zero_shot,feedback_only,structural_retrieval_only,structural_retrieval_plus_feedback \
-    --num-tasks 100 --attempts 3 --workers 12 --seed 42 --tag gemini100
+    --num-tasks 5 --workers 4 --tag smoke --no-plots
+```
 
-# Reproduce a 100-task base Qwen eval (free, ~3-5h on A100)
-export HF_HOME=/scratch/your_user/hf_cache
-python -m quantum_icl.experiment --backend local --model Qwen/Qwen2.5-7B-Instruct \
-    --tiers B,C_lite,D_lite --conditions <same as above> \
+Writes a timestamped run dir under `results_qicl/smoke_*` containing `summary.json`, per-block JSON files, per-attempt JSONL (full prompts + responses), and CSV exports.
+
+### 2. Real API run (OpenRouter)
+
+```bash
+python -m quantum_icl.experiment \
+    --backend openrouter --model google/gemini-3-flash-preview \
+    --tiers B,C_lite,D_lite,D_mid \
+    --conditions zero_shot,feedback_only,structural_retrieval_only,structural_retrieval_plus_feedback \
+    --num-tasks 100 --attempts 3 --max-tokens 1024 --workers 12 --seed 42 \
+    --temperature 0.0 --prompt-variant default \
+    --tag gemini100
+```
+
+Optional flags:
+- `--prompt-variant cot` — chain-of-thought system prompt.
+- `--temperature 0.4 --attempts 5` (with `feedback_only=False`-style condition) — Best-of-N parallel sampling.
+- `--rebuild <run_dir>` — recover a run from per-block files after a timeout/crash.
+
+### 3. Local Hugging Face backend
+
+```bash
+python -m quantum_icl.experiment \
+    --backend local --model Qwen/Qwen2.5-7B-Instruct \
+    --tiers B,C_lite,D_lite --conditions ... \
     --num-tasks 100 --workers 1 --tag base_qwen
 ```
 
-If a multi-hour run dies before writing `summary.json`, recover the partial results from per-block files:
-```bash
-python -m quantum_icl.experiment --rebuild path/to/run_dir
-```
+The model is loaded once and shared across (condition, tier) blocks — see `quantum_icl/llm.py::LocalHFLLM`.
 
----
+### 4. LoRA supervised fine-tuning on simulator-verified synthetic data
 
-## SFT pipeline
+Build a dataset (chat-format, assistant turn = the simulator-verified hidden generator circuit):
 
 ```bash
-# Build training jsonl (assistant turn = simulator-verified generator circuit)
 python -m quantum_icl.sft.build_dataset \
-    --tiers B,C_lite,D_lite --train 600 --val 30 --test 30 \
-    --seed 42 --out /scratch/.../qicl_sft/data_v2
-
-# LoRA SFT on Qwen2.5-7B-Instruct (r=32, alpha=64, assistant_only_loss, 3 epochs)
-python -m quantum_icl.sft.train --model Qwen/Qwen2.5-7B-Instruct \
-    --data /scratch/.../qicl_sft/data_v2 --out /scratch/.../qicl_sft/runs/qwen25_7b_v2
-
-# Evaluate the adapter inside the same experiment runner
-python -m quantum_icl.experiment --backend local --model Qwen/Qwen2.5-7B-Instruct \
-    --adapter-path /scratch/.../runs/qwen25_7b_v2/adapter \
-    --tiers B,C_lite,D_lite --conditions <...> --num-tasks 100 --tag sft_v2
+    --tiers B,C_lite,D_lite \
+    --train 600 --val 30 --test 30 \
+    --seed 42 --out /path/to/sft_data
 ```
 
-> *Failure mode worth knowing about:* training with full-sequence loss (no `assistant_only_loss`) converges fast but mode-collapses — the model emits a single fixed circuit for every target because the assistant turn is a tiny fraction of tokens. Use `--assistant-only-loss` (default in the script).
+Train a LoRA adapter (TRL `SFTTrainer`, **`assistant_only_loss=True`** — critical, without it the model mode-collapses):
 
----
+```bash
+python -m quantum_icl.sft.train \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --data /path/to/sft_data \
+    --out  /path/to/run \
+    --epochs 3 --batch-size 2 --grad-accum 8 \
+    --lr 1e-4 --max-seq-len 2048 --lora-r 32 --lora-alpha 64
+```
 
-## Results (all runs reproducible; see `paper/paper.tex` for the full report)
+Evaluate the adapter using the same experiment runner:
 
-### Experiment 1 — $2\times2$ ablation × three frozen models (100 tasks/cell)
+```bash
+python -m quantum_icl.experiment \
+    --backend local --model Qwen/Qwen2.5-7B-Instruct \
+    --adapter-path /path/to/run/adapter \
+    --tiers B,C_lite,D_lite --conditions ... \
+    --num-tasks 100 --workers 1 --tag sft_qwen
+```
 
-| Tier | Condition | gpt-4o-mini | Gemini-3-Flash | Qwen-7B (base) |
-|---|---|---|---|---|
-| **B** | zero_shot | 9 | **79** | 8 |
-| | feedback_only | 11 | 75 | 14 |
-| | structural_only | 6 | 79 | 11 |
-| | structural+feedback | **12** | **86** | **22** |
-| **C-lite** | zero_shot | 11 | 57 | 23 |
-| | feedback_only | **15** | 74 | **30** |
-| | structural_only | 10 | 73 | 21 |
-| | structural+feedback | **15** | **100**⁺ | 27 |
-| **D-lite** | zero_shot | 7 | 28 | 14 |
-| | feedback_only | **8** | 53 | 20 |
-| | structural_only | 3 | 54 | 15 |
-| | structural+feedback | 4 | **65** | **20** |
+### 5. Tests
 
-⁺ early-stopped at 10/10 (saturated). Cost: gpt-4o-mini $0.22, Gemini-3-Flash $1.33, Qwen 0 (local).
+```bash
+pytest tests/ -q
+```
 
-### Experiment 2 — OracleRetrieval probe (target features ≈ oracle features)
+11 unit tests cover schema validation, verifier correctness on every tier (generator solves own task at fidelity = 1, perturbations fail, global-phase invariance), gate-set enforcement, and retriever ranking.
 
-| Tier | Structural+fb (target) | Oracle (hidden gen features) | Δ |
-|---|---|---|---|
-| B | 10/10⁺ | 29/30 | ≈ 0 |
-| C-lite | 24/30 | 24/30 | 0 |
-| D-lite | 18/30 | 19/30 | +1 |
+## CLI reference
 
-### Experiment 3 — SFT data-size sweep on Qwen-7B (100 tasks/cell)
+`python -m quantum_icl.experiment --help` for the full list. Key flags:
 
-| Tier | Condition | base (0) | 300 | 900 | 1800 | 3600 |
-|---|---|---|---|---|---|---|
-| **B** | zero_shot | 8 | 7 | 17 | 20 | 16 |
-| | feedback_only | 14 | 11 | 19 | 22 | **27** |
-| | struct_only | 11 | 9 | 12 | 11 | **16** |
-| | struct+fb | 22 | — | 12 | 15 | **26** |
-| **C-lite** | zero_shot | 23 | 3 | 17 | 18 | 16 |
-| | feedback_only | 30 | 9 | 34 | **35** | 34 |
-| | struct_only | 21 | — | 10 | 18 | 11 |
-| | struct+fb | 27 | — | 27 | 32 | **35** |
-| **D-lite** | zero_shot | 14 | 0⁻ | 3 | 10 | **16** |
-| | feedback_only | 20 | 0⁻ | 10 | 18 | **22** |
-| | struct_only | 15 | — | 7 | 13 | 10 |
-| | struct+fb | 20 | — | 21 | **28** | 24 |
-
-⁻ early-stopped at 0/10; — = block did not finish (SFT-300 hit walltime; 7 of 12 recovered via per-block persistence).
-
----
-
-## Reproducibility
-
-- **Seeds:** every per-(condition, tier) RNG is derived from `(--seed, condition, tier, "purpose")` via SHA-256 → reproducible across processes regardless of `PYTHONHASHSEED`.
-- **Determinism:** verified `workers=1` vs `workers=8` give identical summaries on mock.
-- **Incremental persistence:** each (condition, tier) block writes to `<run_dir>/blocks/`; `--rebuild` recovers partial runs.
-- **Tests:** `pytest tests/` → 28 passing, covering schema, verifier correctness across every tier (generator solves own task at F=1, perturbations fail, phase invariance), gate-set enforcement, retrievers, SFT, OracleRetrieval.
-
----
-
-## Project meets rubric
-
-| Rubric criterion | Where |
+| Flag | Purpose |
 |---|---|
-| **Problem & Insight (3 pt)** | `paper/paper.tex` §1 + this README header + SLIDES.md slide 2 |
-| **Execution & Technical Work (5 pt)** | 12-module package + 28 tests + 5 SFT runs + 6 100-task evals + LaTeX report (all in `quantum_icl/`, `scripts/`, `paper/`) |
-| **Evaluation & Evidence (3 pt)** | 100-task confirmatory tables, OracleRetrieval probe, SFT data-size curve, paired comparisons |
-| **Communication & Presentation (2 pt)** | `paper/paper.tex` + `SLIDES.md` + README + reproducible CLI |
-| **Process, Integrity & Disclosure (2 pt)** | Public git history, AI-usage statement below, limitations section in paper |
+| `--backend {mock,openrouter,grok,local}` | LLM backend |
+| `--model NAME` | Model id (OpenRouter slug, xAI Grok name, or HF repo) |
+| `--adapter-path PATH` | Load a LoRA adapter (local backend only) |
+| `--tiers A,B,C,D,C_lite,D_lite,D_mid` | Comma-separated tier list |
+| `--conditions ...` | Comma-separated subset of `zero_shot, feedback_only, structural_retrieval_only, structural_retrieval_plus_feedback, fixed_few_shot, random_retrieval, text_retrieval, oracle_retrieval` |
+| `--num-tasks N` | Tasks per (condition, tier) cell |
+| `--attempts N` | Maximum attempts per task (with feedback or sampling) |
+| `--prompt-variant {default,cot}` | Default or chain-of-thought system prompt |
+| `--temperature FLOAT` | Sampling temperature (>0 enables Best-of-N when `attempts>1` and feedback off) |
+| `--max-tokens N` | Per-call output cap |
+| `--workers N` | Concurrent (condition, tier) blocks (deterministic across worker counts) |
+| `--seed INT` | Master seed (per-cell seeds are derived via SHA-256, reproducible across processes) |
+| `--rebuild RUN_DIR` | Reconstruct `summary.json` from per-block files (recovery) |
+| `--tag NAME --outdir DIR` | Output directory and naming |
 
----
+## AI usage disclosure
 
-## AI & tool disclosure
+This project was developed collaboratively with the Anthropic Claude Code agent (Claude Opus 4.7). The author owned all research-direction decisions — task tiers, ablation factorial, model selection, calibration, budget, interpretation of results, and decisions to cancel/resubmit jobs. The agent contributed to code authoring, batch-job orchestration on NERSC Slurm, statistical aggregation, and documentation drafting. Every numerical result presented in any derived writeup is generated by a re-executable script in this repository.
 
-This project was built collaboratively with the **Claude Code agent (Anthropic Claude Opus 4.7)**:
-- **Author (Ivan Ge)** owned all research-direction decisions: choice of task tiers, choice of models and condition factorial, calibration decisions, budget calls, interpretation of all results, decision to cancel/resubmit jobs after failures.
-- **Agent** contributed: code authoring (schema/simulate/verify/library/retrieval/prompts/LLM backends/metrics/experiment/plots/sft), batch-job orchestration on Slurm, statistical aggregation, prose drafting (the LaTeX paper text and this README).
-- **Verifiable artifacts:** every result table here and in `paper/paper.tex` was generated from a re-executable batch script in `scripts/`; per-run summaries are in `results_qicl/`.
+## Acknowledgements
 
-### Tools & external code
-- **TRL** (`SFTTrainer`, `SFTConfig`) for LoRA fine-tuning.
-- **PEFT** for the LoRA adapter implementation.
-- **HuggingFace transformers + datasets** for model loading and data pipeline.
-- **Cirq** for quantum circuit simulation and Hilbert-Schmidt process fidelity.
-- **OpenAI Python SDK** as the OpenAI-compatible client for both OpenRouter and xAI Grok.
-- **OpenRouter** API for gpt-4o-mini, Gemini-3-Flash, deepseek-r1 access; Stanford CS153 course credits.
-- **NERSC Perlmutter** for compute (account `m2616` CPU, `m2616_g` GPU); single A100 80 GB used for all SFT and local-LLM eval.
+External libraries used:
 
-### Model checkpoints
-- `Qwen/Qwen2.5-7B-Instruct` (Apache-2.0; downloaded to pscratch HF cache).
+- [Cirq](https://github.com/quantumlib/Cirq) — quantum-circuit simulation and Hilbert–Schmidt process fidelity.
+- [TRL](https://github.com/huggingface/trl) — `SFTTrainer` / `SFTConfig` for LoRA supervised fine-tuning with `assistant_only_loss`.
+- [PEFT](https://github.com/huggingface/peft) — LoRA adapter implementation.
+- [Transformers](https://github.com/huggingface/transformers) and [Datasets](https://github.com/huggingface/datasets) — model loading and data pipeline.
+- [OpenAI Python SDK](https://github.com/openai/openai-python) — OpenAI-compatible client used for both OpenRouter and xAI Grok.
 
-### What was *not* forked
-- The `quantum_icl/` package is original code written for this project.
-- The data generation, evaluation framework, prompting, and feedback loop are original to this study.
+Compute / inference credits:
 
-### Major decisions documented
-- **DeepSeek-R1 dropped** from main sweeps after pilot showed cost/latency made the 4-tier × 4-condition × 100-task sweep infeasible.
-- **Stabilizer-generator representation tried and dropped** for Tier B — empirically hurt weaker models (1/30 vs 9/30 with raw amplitudes).
-- **SFT v1 mode-collapsed**; switched to `assistant_only_loss=True` for v2.
-- **SFT-300 walltime-killed**; per-block persistence saved 7 of 12 blocks (intended design).
-- **Login-node SIGKILL incident** ($~$8 of API spend lost on a partial run before per-block persistence existed) — fixed by moving long runs to Slurm batch with `--rebuild` recovery.
+- [OpenRouter](https://openrouter.ai) — Stanford CS153 course credits.
+- [NERSC Perlmutter](https://docs.nersc.gov/systems/perlmutter/) — accounts `m2616` (CPU) and `m2616_g` (GPU); single A100 80 GB used for all SFT and local-LLM evaluation.
+
+Model checkpoints downloaded from Hugging Face:
+
+- [`Qwen/Qwen2.5-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) (Apache-2.0).
+
+## External resources
+
+- [OpenRouter model catalog](https://openrouter.ai/models)
+- [Cirq documentation](https://quantumai.google/cirq)
+- [TRL SFTTrainer documentation](https://huggingface.co/docs/trl/sft_trainer)
+- [NERSC Perlmutter user guide](https://docs.nersc.gov/systems/perlmutter/)
